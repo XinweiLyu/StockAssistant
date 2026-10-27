@@ -98,6 +98,13 @@ def _trend(values, period):
     return dict(period=period, ma=ma, distance=distance, slope=slope, state=state)
 
 
+def benchmark_state(values):
+    """Shared MA60/slope regime; callers must supply consecutive completed closes."""
+    if len(values) < 65 or not all(_number(value) for value in values[-65:]):
+        return 'unknown'
+    return _trend(np.asarray(values[-65:], dtype=float), 60)['state']
+
+
 def _week(day):
     d = date.fromisoformat(day)
     return d - timedelta(days=d.weekday())
@@ -172,7 +179,7 @@ def _relative(rows, other, calendar, as_of, horizon):
 def _environment(rows, benchmark, sector, calendar, as_of):
     state = 'unknown'
     if len(benchmark) >= 65 and _adjusted(benchmark[-65:]) and _complete(benchmark[-65:], calendar, as_of):
-        state = _trend(_price_series(benchmark[-65:]), 60)['state']
+        state = benchmark_state(_price_series(benchmark[-65:]))
     return dict(market_state=state, relative20=_relative(rows, benchmark, calendar, as_of, 20),
                 relative60=_relative(rows, benchmark, calendar, as_of, 60),
                 sector_relative20=_relative(rows, sector, calendar, as_of, 20),

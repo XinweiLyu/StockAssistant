@@ -46,3 +46,37 @@ it('refreshes the selected stock detail and local list together after a manual p
     expect(vi.mocked(apiClient.get).mock.calls.filter(call=>call[0]?.endsWith('/stocks'))).toHaveLength(2);
   }finally{cleanup();vi.useRealTimers();}
 });
+
+it('removes a deleted watchlist stock immediately after the saved watchlist changes, preserving its filters',async()=>{
+  vi.useFakeTimers();vi.clearAllMocks();
+  try{
+    let watched=true;
+    const stock={code:'600000',name:'测试自选股',source:'fixture',quote:null,industries:[],concepts:[]};
+    vi.mocked(apiClient.get).mockImplementation(async(url,config)=>({data:
+      url?.endsWith('/stocks')?{items:config?.params?.scope==='watchlist'&&!watched?[]:[stock],total:watched?1:0,page:1,page_size:50}:
+      url?.endsWith('/live')?unavailableLive():url?.endsWith('/outlook')?outlookFixture():
+      url?.endsWith('/integrated-research')?{code:'600000',status:'missing',bundle:null,report:null,task:null,progress:null,message:'尚无综合研究',demo:false}:
+      url?.includes('/market/stocks/')&&url.endsWith('/history')?outlookHistory(config?.params?.adjust||'qfq'):
+      url?.endsWith('/scenarios')?{status:'insufficient',trade_levels:null,forecasts:[]}:
+      url?.endsWith('/sectors')?{items:[],classification:'fixture'}:url?.endsWith('/jobs')?{counts:{},paused:false}:
+      url?.includes('/api/v1/history')?{items:[],total:0,page:1,limit:1}:stock}));
+    const board={settings:{mode:'free',watchlist:['600000'],research_enabled:false},report:null,research:[],events:[],holdings:[]};
+    const props={selectedCode:'600000',onSelectStock:()=>{},onWatchlist:()=>{watched=false;},onResearch:()=>{}};
+    const {rerender}=render(<InvestmentWorkspace {...props} board={board as never}/>);
+    fireEvent.click(screen.getByRole('button',{name:'自选股票'}));
+    fireEvent.change(screen.getByLabelText('搜索股票'),{target:{value:'测试'}});
+    fireEvent.change(screen.getByLabelText('股票市场'),{target:{value:'main'}});
+    fireEvent.change(screen.getByLabelText('股票排序'),{target:{value:'name'}});
+    await act(async()=>{await vi.advanceTimersByTimeAsync(250);});
+    expect(screen.getByRole('button',{name:'测试自选股 600000'})).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button',{name:'加入 / 移出自选'}));
+    rerender(<InvestmentWorkspace {...props} board={{...board,settings:{...board.settings,watchlist:[]}} as never}/>);
+    await act(async()=>{await vi.advanceTimersByTimeAsync(250);});
+    expect(screen.queryByRole('button',{name:'测试自选股 600000'})).not.toBeInTheDocument();
+    expect(screen.getByLabelText('搜索股票')).toHaveValue('测试');
+    expect(screen.getByLabelText('股票市场')).toHaveValue('main');
+    expect(screen.getByLabelText('股票排序')).toHaveValue('name');
+    expect(screen.getByRole('button',{name:'自选股票'})).toHaveAttribute('aria-pressed','true');
+    expect(screen.getByRole('region',{name:'股票研究详情'})).toBeInTheDocument();
+  }finally{cleanup();vi.useRealTimers();}
+});

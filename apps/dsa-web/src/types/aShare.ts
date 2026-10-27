@@ -11,7 +11,7 @@ export interface AssistantSettings {
 export interface Candidate {
   code: string; name: string; sector: string; strategy: string; score: number;
   r20: number; r60: number; v20: number; close: number; high: number; atr: number;
-  sma20: number; sma60: number; valid_date: string | null; source: string;
+  sma20: number; sma60: number; as_of?: string; valid_date: string | null; source: string;
   check?: { status: string; reasons: string[] }; plan?: { entry?: number; quantity: number | null; stop: number | null; reasons: string[]; planned_risk?: number };
 }
 export interface ResearchReport {

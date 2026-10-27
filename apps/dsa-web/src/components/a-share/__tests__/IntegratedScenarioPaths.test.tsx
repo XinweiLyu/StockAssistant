@@ -54,3 +54,20 @@ it('maps every published scenario node to the same verified adjusted-price pair'
  expect(f.scenarios?.find(s=>s.scenario==='bear')?.points[2].high).toBeCloseTo(16.8);
  expect(integratedChartLayer(multiHorizon(),raw,{...qfq,fetched_at:'another-version'},'qfq','000807',60)).toBeUndefined();
 });
+
+it('keeps accepted earlier nodes when every scenario at the selected terminal horizon is missing',()=>{
+ const state=multiHorizon(),history=integratedHistory();
+ state.report!.forecasts=state.report!.forecasts.filter(f=>f.horizon_sessions<60);
+ state.report!.plans=[];
+ const forecast=integratedChartLayer(state,history,history,'raw','000807',60)?.forecast;
+ expect(forecast).toBeDefined();
+ expect(forecast!.points).toEqual([]);
+ expect(forecast!.scenarios?.find(s=>s.scenario==='bear')?.points.map(p=>p.sessions)).toEqual([5,20]);
+ const {container}=render(<PriceChart items={history.items} chartType="candle" indicators={{}} levels={[]} integrated={forecast}/>);
+ expect(container.querySelectorAll('[data-integrated-scenario]')).toHaveLength(3);
+ expect(container.querySelector('[data-sessions="60"]')).not.toBeInTheDocument();
+ expect(screen.getByText(/缺失节点.*60日偏弱.*60日基准.*60日偏强/)).toBeInTheDocument();
+ const bear=container.querySelector('[data-integrated-scenario="bear"] [data-scenario-center]')!;
+ const lastX=Number([...bear.getAttribute('d')!.matchAll(/[ML]([\d.]+),/g)].at(-1)![1]);
+ expect(lastX).toBeCloseTo(840+130/3);
+});

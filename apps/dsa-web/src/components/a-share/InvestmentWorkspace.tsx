@@ -69,7 +69,7 @@ export default function InvestmentWorkspace({board,selectedCode,selectedStrategy
     </div>
     <div id="am-stock-panel" role="tabpanel" aria-labelledby="am-stock-tab" hidden={view!=='stock'}>
       <div className="am-workspace-grid">
-        <MarketStockBrowser key={browserRevision} reloadRevision={priceReload} selectedCode={code} onSelectStock={onSelectStock} industry={industry} concept={concept} industries={groups.industry} concepts={groups.concept} sectorStatus={sectorStatus} onSelectIndustry={s=>{setIndustry(s);setSector(s||concept);}} onSelectConcept={s=>{setConcept(s);setSector(s||industry);}} onClearSector={clear}/>
+        <MarketStockBrowser key={browserRevision} reloadRevision={priceReload} watchlistSignature={[...board.settings.watchlist].sort().join('|')} selectedCode={code} onSelectStock={onSelectStock} industry={industry} concept={concept} industries={groups.industry} concepts={groups.concept} sectorStatus={sectorStatus} onSelectIndustry={s=>{setIndustry(s);setSector(s||concept);}} onSelectConcept={s=>{setConcept(s);setSector(s||industry);}} onClearSector={clear}/>
         <div className="am-main">
           {code?<StockDetail key={code} code={code} candidate={candidate} onWatchlist={onWatchlist} onResearch={onResearch} research={research} events={board.events} onPriceRefresh={refreshPriceList} disabled={!board.settings.research_enabled}/>:<div className="as-empty">从左侧搜索或选择股票，即可在此查看 K 线、指标、AI 价位和证据。</div>}
           <p className="as-footnote am-model-budget">手动模型调用：今日 {board.manual_model_usage??0} 次（不限次，按实际用量计费） · 自动研究上限：{board.model_usage??0} / {board.settings.daily_model_calls??0}</p>

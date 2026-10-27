@@ -8,13 +8,15 @@ import threading
 
 from src.services.a_share_research_progress import progress_view
 from src.schemas.a_share import AssistantSettings
-from src.schemas.a_share_integrated import ResearchBundle, VERSION, digest, stamp
+from src.schemas.a_share_integrated import ResearchBundle, VERSION, digest, stamp, canonical_plan_day, earnings_stage
 from src.services.a_share_market_jobs import MarketJobs
 from src.services.a_share_market_service import configuration_stamp, source_signature, price_family
 from src.services.a_share_outlook_service import merged_bars
 from src.services.a_share_event_cases import event_context, extract_event_facts, match_event_cases, case_price_references, effective_event_families
 from data_provider.a_share_fundamentals import ResearchSources, financial_coverage
 from data_provider.a_share_disclosures import fetch_disclosure_text
+from src.services.a_share_disclosure_batch import prepare_disclosure_batch
+from src.services.a_share_event_lifecycle import annotate_lifecycles
 
 
 class EvidenceNotReady(ValueError):
@@ -62,6 +64,20 @@ class IntegratedResearchService:
     def bundle(self, data_hash):
         return self.assistant.repo.latest(self.profile, 'research_bundle', key=data_hash)
 
+    def _eligibility(self, stock):
+        return dict(identity_verified=stock.get('identity_verified'), st=stock.get('st'), board=stock.get('board'),
+                    major_risk=bool(self.assistant.major_risks().get(stock['code'], False)))
+
+    def _expired_plans(self, report):
+        today = date.fromisoformat(self._now()[:10])
+        for plan in report.get('plans', []):
+            try:
+                if date.fromisoformat(canonical_plan_day(plan.get('valid_until'))) < today:
+                    return True
+            except (ValueError, TypeError, AttributeError):
+                return True
+        return False
+
     def _industry(self, code):
         """Resolve hierarchical classifications only when verified memberships nest."""
         market = self.assistant.market
@@ -76,7 +92,7 @@ class IntegratedResearchService:
 
     @settings_locked
     def get(self, code):
-        self.assistant.market.stock(code)
+        stock = self.assistant.market.stock(code)
         repo, key = self.assistant.repo, self.key(code)
         pointer = repo.latest(self.profile, 'research_pointer', key=key, default={})
         bundle = self.bundle(pointer['data_hash']) if pointer.get('data_hash') else None
@@ -85,21 +101,32 @@ class IntegratedResearchService:
         task = self.assistant.market.repo.task(task_pointer.get('id')) if task_pointer.get('id') else None
         running = self._running.get(key)
         status = 'missing'
-        stale = False
+        stale_reasons = []
         if bundle:
             status = 'ready'
-            if (bundle.get('version') != VERSION or bundle['history_binding'] != self._binding(code) or
-                    bundle['context'].get('source_signature') != list(source_signature(self.assistant.settings))):
+            if bundle.get('version') != VERSION:
+                stale_reasons.append('研究规则版本已更新，请更新资料')
+            if bundle['history_binding'] != self._binding(code):
+                stale_reasons.append('完整历史或价格锚点已变化')
+            if bundle['context'].get('source_signature') != list(source_signature(self.assistant.settings)):
+                stale_reasons.append('数据来源配置已变化')
+            if bundle['context'].get('eligibility_binding') is None:
+                stale_reasons.append('旧版资料缺少证券资格与风险快照，请更新资料')
+            elif bundle['context']['eligibility_binding'] != self._eligibility(stock):
+                stale_reasons.append('证券资格或已核实重大风险已变化，旧策略仅供历史对照')
+            if stale_reasons:
                 status = 'stale'
-                stale = True
         if task and task['state'] in ('pending', 'running'):
             status = 'preparing'
         elif task and task['state'] == 'failed' and not bundle:
             status = 'failed'
-        if report and (not bundle or report['data_hash'] != bundle['data_hash'] or stale or
-                       (self.assistant.settings.model and report.get('model') != self.assistant.settings.model) or
-                       any(p.get('valid_until','9999') < self._now()[:10] for p in report.get('plans',[]))):
-            report = report | dict(stale=True)
+        if report:
+            if self._expired_plans(report):
+                stale_reasons.append('研究计划已过期或有效日期无效')
+            if self.assistant.settings.model and report.get('model') != self.assistant.settings.model:
+                stale_reasons.append('研究模型配置已变化')
+            if not bundle or report['data_hash'] != bundle['data_hash'] or stale_reasons:
+                report = report | dict(stale=True)
         if running:
             status = 'running'
         waiting = self.assistant.market.repo.get_state(self.profile, 'research_waiting:' + code, {})
@@ -114,12 +141,12 @@ class IntegratedResearchService:
                 peer_progress[child['state']]+=1
         if not running and task and task['state'] in ('pending','running'):
             running=dict(completed=0,expected=6,phase='preparing',current='资料准备',message='正在排队或获取财务、公告及新闻资料',started_at=task.get('created_at'))
-        return dict(code=code, status=status, bundle=bundle, report=report,
+        return dict(code=code, status=status, bundle=bundle, report=report, stale_reasons=stale_reasons,
                     task={k:task[k] for k in ('id','state','error','updated_at')} if task else None,
                     progress=progress_view(running,self._now()), demo=self.profile == 'demo',
                     peer_progress=peer_progress,
                     validation=self.validation(code) if report else None,
-                    message=waiting.get('reason') or '资料与预测按独立时间版本留存；读取不调用模型')
+                    message=waiting.get('reason') or '；'.join(stale_reasons) or '资料与预测按独立时间版本留存；读取不调用模型')
 
     @settings_locked
     def prepare(self, code, peer_offset=0):
@@ -157,7 +184,7 @@ class IntegratedResearchService:
             output[kind] = [dict(b, adjusted_close=b['close']) for b in (history or {}).get('items', [])]
         return output
 
-    def _case_library(self, target_code, events, cutoff, industry, elapsed_sessions=0):
+    def _case_library(self, target_code, events, cutoff, industry, elapsed_sessions=0, histories_cache=None):
         svc, market = self.assistant, self.assistant.market
         all_events = []
         peers = market.repo.members(self.profile, industry['sector_id']).get('codes', []) if industry else []
@@ -167,8 +194,12 @@ class IntegratedResearchService:
             if not selected:
                 continue
             snapshots = svc.repo.records(self.profile, 'industry_archive', key=self.key(code), limit=200)
-            histories = self._histories(code, industry.get('sector_id') if industry else None)
-            for event in selected:
+            cache = histories_cache if histories_cache is not None else {}
+            if code not in cache:
+                cache[code] = self._histories(code, industry.get('sector_id') if industry else None)
+            histories = cache[code]
+            known_events = [e for e in selected if stamp(e.get('published_at')) and stamp(e['published_at']) <= cutoff]
+            for event in effective_event_families(known_events):
                 if not event.get('text'):
                     continue
                 extracted = extract_event_facts(event, data.get('facts', []))
@@ -176,7 +207,20 @@ class IntegratedResearchService:
                 known = next((r['payload'] for r in snapshots if r['payload']['observed_at'] <= when), None)
                 extracted.update(industry_id=(known or {}).get('sector_id') or (industry or {}).get('sector_id'),
                                  industry_quality='archived' if known else 'current_membership_only', valuation_percentile=None)
-                all_events.append(event_context(extracted, histories, market.calendar(), cutoff, elapsed_sessions))
+                observed = event_context(extracted, histories, market.calendar(), cutoff, elapsed_sessions)
+                stage = earnings_stage(event.get('title', '')) if event.get('kind') == 'earnings' else 0
+                stage_day = observed.get('stage_anchor_date')
+                stage_end = stamp(stage_day + 'T15:00:00+08:00') if stage_day else None
+                if stage and event.get('report_period') and stage_end:
+                    # Retire a historical guidance only when a later statement was
+                    # already public at this case's aligned stage, never as of today.
+                    replacements = [other for other in known_events
+                        if other.get('kind') == 'earnings'
+                        and other.get('report_period') == event['report_period']
+                        and earnings_stage(other.get('title', '')) > stage
+                        and stamp(event['published_at']) <= stamp(other['published_at']) <= stage_end]
+                    observed['stage_state'] = 'superseded' if replacements else 'outstanding'
+                all_events.append(observed)
         return all_events
 
     @settings_locked
@@ -203,25 +247,43 @@ class IntegratedResearchService:
             when = stamp(event.get('published_at'))
             if when and when <= cutoff:
                 extracted = extract_event_facts(event, available)
-                age = sum(when[:10] < d <= context['anchor_date'] for d in days)
-                selected_events.append(extracted | dict(active_catalyst=age <= 20, age_sessions=age))
+                selected_events.append(extracted)
         selected_events.sort(key=lambda e:e['published_at'], reverse=True)
         selected_events=effective_event_families(selected_events)
-        latest = next((e for e in selected_events if e.get('active_catalyst') and e.get('public_verified')), None)
-        elapsed = latest['age_sessions'] if latest else 0
-        library = self._case_library(code, selected_events, cutoff, industry, elapsed)
-        current = max((e for e in library if e['code'] == code and e.get('active_catalyst')),
-                      key=lambda e:e.get('published_at') or '', default={})
-        target = current | dict(industry_id=(industry or {}).get('sector_id'),
-            market_state=baseline.get('environment', {}).get('market_state', 'unknown'))
+        selected_events=annotate_lifecycles(selected_events, days, context['anchor_date'])
         valuation = next((f for f in available if f['values'].get('pe_percentile') is not None),None)
-        target['valuation_percentile'] = valuation['values']['pe_percentile'] if valuation else None
-        cases = match_event_cases(target, library, cutoff) if current else match_event_cases({}, library, cutoff)
-        cases['target_event'] = {k:v for k,v in target.items() if k not in ('text','outcomes')} if current else None
-        cases['elapsed_sessions'] = elapsed
-        cases['price_references'] = case_price_references(cases, context['reference_price'])
-        if not current:
-            missing.append('近20个交易日暂无可核对原文的当前事件；旧消息不作为新增催化，历史案例不能生成数值影响')
+        targets = [e for e in selected_events if e.get('active_catalyst')][:12]
+        cohorts, cache = [], {}
+        for event in targets:
+            elapsed = event['age_sessions']
+            library = self._case_library(code, selected_events, cutoff, industry, elapsed, cache)
+            target = next((e for e in library if e['id'] == event['id'] and e['code'] == code), None)
+            if target is None:
+                continue
+            target = target | dict(industry_id=(industry or {}).get('sector_id'),
+                market_state=baseline.get('environment', {}).get('market_state', 'unknown'),
+                valuation_percentile=valuation['values']['pe_percentile'] if valuation else None)
+            cohort = match_event_cases(target, library, cutoff)
+            cohort.update(target_event={k:v for k,v in target.items() if k not in ('text','outcomes')}, elapsed_sessions=elapsed)
+            cohorts.append(cohort)
+        # Retain compatibility for consumers of one primary cohort; never pool different mechanisms.
+        cases = deepcopy(cohorts[0]) if cohorts else match_event_cases({}, [], cutoff)
+        cases.setdefault('target_event', None)
+        cases.setdefault('elapsed_sessions', 0)
+        references = []
+        for index, cohort in enumerate(cohorts):
+            cohort['price_references'] = case_price_references(cohort, context['reference_price'])
+            for ref in cohort['price_references']:
+                ref['id'] += '_' + digest(cohort['target_event']['id'])[:10] if index else ''
+                ref.update(target_event_id=cohort['target_event']['id'], elapsed_sessions=cohort['elapsed_sessions'])
+            references.extend(cohort['price_references'])
+        cases.update(cohorts=cohorts, price_references=references, diagnostics=dict(
+            announcements=len(events or []), verified_texts=sum(e.get('text_status')=='ready' and bool(e.get('text')) for e in events or []),
+            tracking_events=sum(bool(e.get('tracking_active')) for e in selected_events),
+            quantified_targets=len(cohorts), omitted_targets=max(0,sum(bool(e.get('active_catalyst')) for e in selected_events)-len(cohorts)),
+            unquantified_tracking=sum(bool(e.get('tracking_active')) and not e.get('active_catalyst') for e in selected_events)))
+        if not cohorts:
+            missing.append(cases['message'])
         if not industry:
             missing.append('行业资料未核实或存在歧义')
         if not available:
@@ -233,13 +295,14 @@ class IntegratedResearchService:
                  source=(industry or {}).get('classification')),
             dict(category='liquidity',status='ready' if context['features'].get('avg_amount') else 'missing',count=20,
                  source=context['source']),dict(category='chips',status='missing',count=0)]
+        eligibility = self._eligibility(stock)
         research_context = dict(price=context, industry=industry,financial_coverage=financial_coverage(available),
-            identity_verified=stock.get('identity_verified'),st=stock.get('st'),board=stock.get('board'),
+            **eligibility,eligibility_binding=eligibility,
             source_signature=list(source_signature(svc.settings)))
         # Source observations are frozen once. A refresh of identical content does not buy new inference.
         identity = digest(dict(version=VERSION, code=code, binding=binding,
             source_signature=source_signature(svc.settings), facts=[f.get('content_hash') or digest(f) for f in available],
-            events=[{k:v for k,v in e.items() if k not in ('observed_at','available_at')} for e in selected_events],
+            events=[{k:v for k,v in e.items() if k not in ('observed_at','available_at','text_attempted_at','text_attempts')} for e in selected_events],
             baseline=baseline['data_hash'], cases=cases,context=research_context,coverage=(coverage or [])+price_coverage,missing=missing))
         existing = self.bundle(identity)
         if existing:
@@ -248,7 +311,7 @@ class IntegratedResearchService:
         bundle = ResearchBundle(code=code, name=stock['name'], cutoff=cutoff, anchor_date=context['anchor_date'],
             reference_price=context['reference_price'], source=context['source'], history_binding=binding,
             data_hash=identity, facts=available,
-            events=list({e['id']:e for e in selected_events[:24]+[e for e in selected_events if e.get('text_status')=='ready'][:12]}.values()), cases=cases,
+            events=list({e['id']:e for e in targets+[e for e in selected_events if e.get('tracking_active')][:24]+selected_events[:24]+[e for e in selected_events if e.get('text_status')=='ready'][:12]}.values()), cases=cases,
             baseline=baseline, context=research_context,
             coverage=(coverage or []) + price_coverage, missing=list(dict.fromkeys(missing)), demo=self.profile == 'demo').model_dump()
         svc.repo.append(self.profile, 'research_bundle', identity, bundle)
@@ -273,19 +336,11 @@ class IntegratedResearchService:
         financial = source.financials(code, now)
         valuation = source.valuation(code, now)
         disclosure = source.disclosures(code, start, now[:10], now)
-        events = disclosure['events']
-        priorities = sorted(events, key=lambda e: (0 if '业绩预告' in e['title'] else 1 if '快报' in e['title'] else 2 if e['kind']=='regulatory' else 3, -int(e['published_at'][:10].replace('-',''))))
         previous = svc.repo.latest(self.profile, 'research_data', key=self.key(code), default={})
         if previous.get('source_signature') != list(source_signature(settings)):
             previous = {}
-        old_events = {e['id']:e for e in previous.get('events', [])}
-        for event in priorities[:6]:
-            old = old_events.get(event['id'])
-            if old and old.get('text_status') == 'ready':
-                event.update({k:old[k] for k in ('text','text_status','text_hash')})
-                continue
-            document = fetch_disclosure_text(event['url'], event['published_at'][:10])
-            event.update(text=document.get('text', ''), text_status=document['status'], text_hash=document.get('content_hash'))
+        events, text_coverage = prepare_disclosure_batch(disclosure['events'], previous.get('events', []),
+            now, market.calendar(), end, fetch_disclosure_text)
         stock = market.stock(code)
         news = source.news(code, stock['name'], stock.get('industries', []), now) if payload.get('include_peers') else dict(status='missing', facts=[])
         facts = financial['facts'] + valuation['facts'] + news['facts']
@@ -293,7 +348,8 @@ class IntegratedResearchService:
         facts = [old_facts.get(f['fact_id'], f) for f in facts]
         coverage = [dict(category='financial', status=financial['status'], count=len(financial['facts']), sources=sorted({f['source'] for f in financial['facts']}), errors=financial.get('errors', [])),
             dict(category='valuation', status=valuation['status'], count=len(valuation['history']), sources=sorted({f['source'] for f in valuation['facts']})),
-            dict(category='disclosures', status=disclosure['status'], count=len(events), texts=sum(e.get('text_status')=='ready' for e in events), source='cninfo', errors=disclosure.get('errors', [])),
+            dict(category='disclosures', status=disclosure['status'], count=len(events), **text_coverage,
+                 source='cninfo', errors=disclosure.get('errors', [])),
             dict(category='news', status=news['status'], count=len(news['facts']), limitations=news.get('limitations', []))]
         with market._publication(task):
             if task['profile'] != self.profile or source_signature(settings) != source_signature(svc.settings):

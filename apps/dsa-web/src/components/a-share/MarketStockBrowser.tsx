@@ -6,6 +6,7 @@ type Props = {
   onSelectStock: (code: string) => void;
   selectedCode?: string;
   reloadRevision?: number;
+  watchlistSignature?: string;
   industry?: Sector;
   concept?: Sector;
   industries: Sector[];
@@ -18,10 +19,11 @@ type Props = {
 
 export default function MarketStockBrowser({
   onSelectStock, selectedCode, industry, concept, industries, concepts, sectorStatus,
-  onSelectIndustry, onSelectConcept, onClearSector, reloadRevision=0,
+  onSelectIndustry, onSelectConcept, onClearSector, reloadRevision=0, watchlistSignature='',
 }: Props) {
   const [q, setQ] = useState('');
   const [scope, setScope] = useState('all');
+  const watchlistKey = scope === 'watchlist' ? watchlistSignature : '';
   const [board, setBoard] = useState('');
   const [sort, setSort] = useState('change');
   const [paging, setPaging] = useState({ filter: '', page: 1 });
@@ -74,6 +76,11 @@ export default function MarketStockBrowser({
         concept_id: concept?.sector_id,
       }, controller.signal).then(result => {
         if (!controller.signal.aborted) {
+          const lastPage = Math.max(1, Math.ceil(result.total / 50));
+          if (scope === 'watchlist' && page > lastPage) {
+            setPaging({ filter: filterKey, page: lastPage });
+            return;
+          }
           lastChecked.current = Date.now();
           setSaved({ key, result, checkedAt: lastChecked.current });
         }
@@ -88,7 +95,7 @@ export default function MarketStockBrowser({
       });
     }, 200);
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [q, scope, board, sort, page, industry, concept, key, retry, unknown, reloadRevision]);
+  }, [q, scope, board, sort, page, industry, concept, key, retry, unknown, reloadRevision, watchlistKey, filterKey]);
 
   useEffect(() => {
     lastChecked.current = Date.now();

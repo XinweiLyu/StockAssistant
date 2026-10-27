@@ -2,7 +2,7 @@ from copy import deepcopy
 from datetime import date, timedelta
 import pytest
 
-from src.services.a_share_event_cases import match_event_cases, case_price_references, event_context, extract_event_facts
+from src.services.a_share_event_cases import match_event_cases, case_price_references, event_context, extract_event_facts, effective_event_families
 
 
 def target():
@@ -129,3 +129,39 @@ def test_context_uses_completed_aligned_calendar_and_pre_event_returns():
     assert context['outcomes']['5']['stock_return'] == pytest.approx(45/40-1)
     assert context['outcomes']['5']['market_excess'] == 0
     assert context['outcomes']['5']['execution_status'] == 'unverified'
+
+
+def test_same_event_family_cannot_be_reused_as_its_own_historical_analogue():
+    current = dict(target(), code='600000', family_id='shared-family')
+    historical = dict(cases()[0], code='600000', family_id='shared-family', id='old-version')
+    result = match_event_cases(current, [historical], '2026-10-16')
+    assert result['horizons']['20']['sample_size'] == 0
+    assert result['excluded']['self'] == 1
+
+
+def test_different_pre_event_runup_does_not_become_numeric_analogue_at_same_current_runup():
+    data = cases()
+    for row in data:
+        row['event_pre20'] = .05
+        row['realized_since_event'] = .1
+    data[0]['event_pre20'] = .8
+    result = match_event_cases(dict(target(), event_pre20=.05, realized_since_event=.1), data, '2026-10-16')
+    assert result['horizons']['20']['sample_size'] == 9
+    assert 'event_pre20' in result['reference_cases'][0]['mismatch']
+
+
+def test_ready_summary_can_represent_simultaneous_report_but_not_an_unread_correction():
+    full=dict(id='full',code='600000',kind='earnings',report_period='2026-06-30',family_id='legacy',
+        title='2026年半年度报告',published_at='2026-08-22',text_status='failed')
+    summary=dict(full,id='summary',title='2026年半年度报告摘要',text_status='ready',text='净利润同比增长50%')
+    assert effective_event_families([full,summary])[0]['id']=='summary'
+    correction=dict(full,id='correction',title='2026年半年度报告（更正后）',text_status='missing')
+    assert effective_event_families([summary,correction])[0]['id']=='correction'
+
+
+def test_legacy_family_collision_cannot_merge_earnings_briefing_and_report_and_guidance():
+    base=dict(code='600000',kind='earnings',report_period='2026-06-30',family_id='legacy',text_status='ready')
+    events=[dict(base,id='guidance',title='半年度业绩预增公告',published_at='2026-07-10'),
+            dict(base,id='report',title='半年度报告摘要',published_at='2026-08-22'),
+            dict(base,id='meeting',title='半年度业绩说明会公告',published_at='2026-08-25')]
+    assert {e['id'] for e in effective_event_families(events)}=={'guidance','report','meeting'}

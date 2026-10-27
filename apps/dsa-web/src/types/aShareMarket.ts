@@ -60,6 +60,14 @@ export interface EventCaseStats {
   median_market_excess?:number|null;median_industry_excess?:number|null;median_adverse?:number|null;
   reason:string;concentration_warning?:boolean;
 }
+export interface EventCaseMatch {
+  status?:string;message?:string;horizons:Record<string,EventCaseStats>;
+  cases:Record<string,unknown>[];reference_cases:Record<string,unknown>[];excluded:Record<string,number>;
+  missing_dimensions:string[];limitations:string[];optional_missing?:string[];
+  target_event?:{id:string;title?:string;age_sessions?:number;published_at?:string}|null;elapsed_sessions?:number;
+  cohorts?:EventCaseMatch[];
+  diagnostics?:{announcements:number;verified_texts:number;tracking_events:number;quantified_targets:number;unquantified_tracking:number;omitted_targets:number};
+}
 export interface IntegratedForecast extends PriceForecast { basis_ids:string[];derivation:string }
 export interface IntegratedPlan {
   horizon_sessions:number;strategy_kind:string;status:'conditional'|'observe';entry_low:number|null;entry_high:number|null;stop_reference:number|null;
@@ -79,13 +87,14 @@ export interface IntegratedReport {
 }
 export interface IntegratedBundle {
   code:string;name:string;data_hash:string;anchor_date:string;cutoff:string;reference_price:number;source:string;history_binding:IntegratedHistoryBinding;
-  facts:IntegratedFact[];events:{id:string;title:string;url?:string;published_at?:string;text_status?:string;text?:string;direction?:string;intensity?:number|null}[];
-  cases:{horizons:Record<string,EventCaseStats>;cases:Record<string,unknown>[];reference_cases:Record<string,unknown>[];excluded:Record<string,number>;missing_dimensions:string[];limitations:string[];optional_missing?:string[]};
-  coverage:{category:string;status:string;count:number;texts?:number;sources?:string[];source?:string;limitations?:string[]}[];
+  facts:IntegratedFact[];events:{id:string;title:string;url?:string;published_at?:string;text_status?:string;text?:string;direction?:string;intensity?:number|null;age_sessions?:number|null;tracking_active?:boolean;lifecycle_state?:string;review_sessions?:number;review_reason?:string}[];
+  cases:EventCaseMatch;
+  coverage:{category:string;status:string;count:number;texts?:number;attempted?:number;pending?:number;retry_wait?:number;sources?:string[];source?:string;limitations?:string[]}[];
   missing:string[];context:Record<string,unknown>&{financial_coverage?:{report_period:string|null;fields:Record<string,{status:string;reason:string;values?:unknown[];fact_ids:string[];value?:number|null;observations?:{fact_id:string;source:string;report_type:string|null;value:number}[]}>}};baseline:Partial<QuantOutlook>;
 }
 export interface IntegratedResearchResult {
   code:string;status:string;bundle:IntegratedBundle|null;report:IntegratedReport|null;demo:boolean;message:string;
+  stale_reasons?:string[];
   progress:{completed:number;expected:number;current?:string|null;calls?:number;message:string;phase?:string;percent?:number;started_at?:string;elapsed_seconds?:number|null;eta_seconds?:[number,number]|null;eta_samples?:number;estimate_overrun?:boolean;steps?:{role:string;label:string;status:string;duration_seconds?:number|null}[]}|null;
   task:{id:string;state:string;error?:string|null;updated_at?:string}|null;
   validation?:IntegratedValidation|null;

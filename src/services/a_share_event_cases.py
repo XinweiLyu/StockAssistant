@@ -2,19 +2,26 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime
 from math import isfinite
 import re
 import numpy as np
-from src.schemas.a_share_integrated import stamp
+from src.schemas.a_share_integrated import stamp, digest, earnings_stage
+from src.services.a_share_event_lifecycle import event_anchor_index
+from src.services.a_share_outlook import benchmark_state
 
-HORIZONS = (1, 5, 20, 60)
+HORIZONS = (1, 5, 20, 60, 120, 250)
 
 
 def effective_event_families(events):
     """Latest known family state supersedes earlier positive statements, even if withdrawn."""
     selected,seen=[],set()
-    for index,event in enumerate(sorted(events,key=lambda e:e.get('published_at') or '',reverse=True)):
+    def order(event):
+        return (event.get('published_at') or '', bool(re.search(r'更正|修订|修正',event.get('title',''))),
+                bool(event.get('text_status')=='ready' and event.get('text')))
+    for index,event in enumerate(sorted(events,key=order,reverse=True)):
+        if event.get('kind')=='earnings' and event.get('report_period'):
+            subtype={1:'guidance',2:'flash',3:'report'}.get(earnings_stage(event.get('title','')))
+            event=event | dict(family_id=digest([event.get('code'),'earnings',event['report_period'],subtype]) if subtype else event.get('id'))
         key=(event.get('code'),event.get('family_id') or event.get('id') or str(index))
         if key not in seen:
             selected.append(event)
@@ -35,43 +42,71 @@ def extract_event_facts(document, numeric_facts, completion=None):
         return result
     if re.search(r'撤销|撤回|作废', document.get('title','')):
         return result | dict(extraction_status='withdrawn')
+    # Background earnings in a contract or penalty do not quantify that event.
+    # Mixed documents require a metric/period-aware extractor before publication.
+    if document.get('kind') != 'earnings' or document.get('mixed_events'):
+        return result
+    if re.search(r'(?:更正|修订|修正|调整)[前后]|原预计|原披露|原公告|此前(?:预计|披露)', text):
+        return result
     # Keep an exact supporting span. A YoY change is not a consensus surprise.
-    pattern = r'净利润[\s\S]{0,60}?(?:同比|比上年同期)(增长|增加|上升|下降|减少)[：:\s]*(-?\d+(?:\.\d+)?)\s*%\s*(?:(?:至|到|—|－|~|～|-)\s*(-?\d+(?:\.\d+)?)\s*%)?'
-    match = re.search(pattern, text)
-    if match:
-        low = float(match[2])
-        high = float(match[3]) if match[3] is not None else low
-        amount = (low + high) / 200
-        if match[1] in ('下降', '减少'):
-            amount = -abs(amount)
-        return result | dict(direction='positive' if amount > 0 else 'negative' if amount < 0 else 'neutral',
-                             intensity=amount, intensity_unit='profit_yoy_ratio', evidence_quote=match[0],
-                             extraction_status='quoted_numeric', mixed_events=bool(document.get('mixed_events')))
-    if completion is not None:
-        candidate = completion(document, numeric_facts)
-        quote = candidate.get('evidence_quote') if isinstance(candidate, dict) else None
-        # AI can point to a span; the same deterministic numeric verifier must accept it.
-        if isinstance(quote, str) and quote and quote in text:
-            checked = extract_event_facts(dict(document, text=quote), numeric_facts)
-            if checked['intensity'] is not None:
-                return result | {k: checked[k] for k in ('direction', 'intensity', 'intensity_unit', 'evidence_quote', 'extraction_status')}
-    return result
+    # Accept an explicit subject/comparison phrase; arbitrary intervening prose
+    # can switch to a different metric even within the same sentence.
+    pattern = r'净利润[：:\s]*(?:(?:预计|预期|将)[：:\s]*)?(?:同比|比上年同期)(增长|增加|上升|下降|减少)[：:\s]*(-?\d+(?:\.\d+)?)\s*%\s*(?:(?:至|到|—|－|~|～|-)\s*(-?\d+(?:\.\d+)?)\s*%)?'
+    matches = list(re.finditer(pattern, text))
+    # Multiple metrics or periods cannot be resolved by choosing the first span.
+    if len(matches) != 1:
+        return result
+    match = matches[0]
+    prefix = re.split(r'[。；;!?！？]', text[:match.start()])[-1][-160:]
+    subject = re.split(r'[，,]', prefix)[-1]
+    deducted = r'(?:扣非|扣除非经常性损益(?:后)?(?:的)?)'
+    parent = r'(?:归母|归属于上市公司股东的?)'
+    join = r'\s*(?:与|及|和|、|/)\s*'
+    if re.search(parent+join+deducted+'|'+deducted+join+parent, subject):
+        return result
+    unit = 'deducted_profit_yoy_ratio' if re.search(deducted, subject) else 'profit_yoy_ratio'
+    quote = text[match.start()-len(subject):match.end()] if unit=='deducted_profit_yoy_ratio' else match[0]
+    if re.search(r'上年|去年|上一(?:年|报告期)|此前|原预计|原披露|原公告', prefix):
+        return result
+    period = str(document.get('report_period') or '')
+    title_years = re.findall(r'(20\d{2})年', document.get('title', ''))
+    year = period[:4] if re.fullmatch(r'20\d{2}-\d{2}-\d{2}', period) else title_years[0] if len(set(title_years)) == 1 else None
+    explicit_years = re.findall(r'(20\d{2})年', prefix)
+    if explicit_years and (not year or any(y != year for y in explicit_years)):
+        return result
+    # Only recognize a few explicit reporting periods; otherwise retain the gap.
+    periods = [(r'(?:第一|一)季度', '03-31'),
+               (r'半年度|中期|上半年|1\s*[-至—]\s*6\s*月', '06-30'),
+               (r'前三季度|(?:第三|三)季度|1\s*[-至—]\s*9\s*月', '09-30'),
+               (r'全年|(?<!半)年度|1\s*[-至—]\s*12\s*月', '12-31')]
+    explicit_periods = {end for expression, end in periods if re.search(expression, prefix)}
+    if explicit_periods and (len(explicit_periods) != 1 or period[5:] not in explicit_periods):
+        return result
+    if explicit_years and not explicit_periods and period[5:] != '12-31':
+        return result
+    low = float(match[2])
+    high = float(match[3]) if match[3] is not None else low
+    amount = (low + high) / 200
+    if match[1] in ('下降', '减少'):
+        amount = -abs(amount)
+    # The optional completion argument remains API-compatible, but a clipped quote
+    # cannot override the full document's ambiguity or current-period checks.
+    return result | dict(direction='positive' if amount > 0 else 'negative' if amount < 0 else 'neutral',
+                         intensity=amount, intensity_unit=unit, evidence_quote=quote,
+                         extraction_status='quoted_numeric', mixed_events=False)
 
 
 def event_context(event, histories, calendar, cutoff, elapsed_sessions=0):
-    if isinstance(elapsed_sessions,bool) or not isinstance(elapsed_sessions,int) or not 0 <= elapsed_sessions <= 20:
-        raise ValueError('事件已过去的交易日须为0至20')
+    if isinstance(elapsed_sessions,bool) or not isinstance(elapsed_sessions,int) or not 0 <= elapsed_sessions <= 1250:
+        raise ValueError('事件阶段须为0至1250个已完成交易日')
     calendar = sorted(set(d for d in calendar if d <= str(cutoff)[:10]))
     published = stamp(event.get('published_at'))
     output = dict(event, outcomes={}, pre5=None, pre20=None, market_state='unknown')
     if not published or published > stamp(cutoff):
         return output
-    day = published[:10]
-    after_close = datetime.fromisoformat(published).hour >= 15
-    before = [d for d in calendar if d <= day] if after_close else [d for d in calendar if d < day]
-    if not before:
+    anchor = event_anchor_index(published, calendar)
+    if anchor is None:
         return output
-    anchor = calendar.index(before[-1])
     maps = {k: {r['date']: r for r in v if r['date'] <= str(cutoff)[:10]} for k, v in histories.items()}
 
     def close(kind, index):
@@ -90,15 +125,15 @@ def event_context(event, histories, calendar, cutoff, elapsed_sessions=0):
     base = close('stock', anchor)
     if base is None:
         return output
+    output['stage_anchor_date'] = calendar[anchor]
+    output['realized_since_event'] = base/original_price-1 if original_price else None
     for h in (5, 20):
         previous = close('stock', anchor - h)
         span = calendar[max(0, anchor-h):anchor+1]
         if previous and all(close('stock', calendar.index(d)) for d in span):
             output[f'pre{h}'] = base / previous - 1
-    benchmark = [close('benchmark', i) for i in range(max(0, anchor-59), anchor+1)]
-    if len(benchmark) == 60 and all(benchmark):
-        average = float(np.mean(benchmark))
-        output['market_state'] = 'up' if benchmark[-1] > average*1.005 else 'down' if benchmark[-1] < average*.995 else 'range'
+    benchmark = [close('benchmark', i) for i in range(max(0, anchor-64), anchor+1)]
+    output['market_state'] = benchmark_state(benchmark)
     for h in HORIZONS:
         end = anchor + h
         if end >= len(calendar) or not all(close('stock', i) for i in range(anchor, end+1)):
@@ -137,7 +172,13 @@ def match_event_cases(target, cases, cutoff, horizons=HORIZONS):
     cutoff_stamp = stamp(cutoff)
     cutoff_day = cutoff_stamp[:10]
     excluded, families, eligible, references = Counter(), set(), [], []
+    if not target.get('id'):
+        message = '没有已核对原文并可量化的跟踪事件，尚未启动历史可比匹配；不代表历史事件不存在'
+        return dict(status='no_target', message=message, horizons={str(h):dict(horizon_sessions=h,
+            sample_size=0, companies=0, numerical_eligible=False, reason=message) for h in horizons},
+            cases=[], reference_cases=[], excluded={}, missing_dimensions=[], optional_missing=[], limitations=[])
     required = ('market_state', 'pre20', 'intensity', 'industry_id')
+    target_stage = earnings_stage(target.get('title', '')) if target.get('kind') == 'earnings' else 0
     missing = [k for k in required if target.get(k) in (None, '', 'unknown')]
     optional_missing = [k for k in ('valuation_percentile',) if not finite(target.get(k))]
     for case in sorted(cases, key=lambda e: e.get('published_at') or '', reverse=True):
@@ -147,7 +188,7 @@ def match_event_cases(target, cases, cutoff, horizons=HORIZONS):
         duplicate = family in families
         if when and when <= cutoff_stamp and case.get('public_verified'):
             families.add(family)
-        if case.get('id') == target.get('id'):
+        if case.get('id') == target.get('id') or (target.get('family_id') and family == (target.get('code'), target['family_id'])):
             reason = 'self'
         elif not when or when > cutoff_stamp:
             reason = 'future'
@@ -155,6 +196,12 @@ def match_event_cases(target, cases, cutoff, horizons=HORIZONS):
             reason = 'unverified_publication'
         elif case.get('kind') != target.get('kind'):
             reason = 'event_kind'
+        elif target_stage and earnings_stage(case.get('title', '')) != target_stage:
+            reason = 'earnings_stage'
+        elif case.get('stage_state') == 'superseded':
+            reason = 'superseded_at_stage'
+        elif case.get('intensity_unit') != target.get('intensity_unit'):
+            reason = 'intensity_unit'
         elif case.get('direction') != target.get('direction') or case.get('direction') == 'unknown':
             reason = 'direction'
         elif case.get('industry_quality') not in ('historical', 'archived'):
@@ -167,13 +214,14 @@ def match_event_cases(target, cases, cutoff, horizons=HORIZONS):
             excluded[reason] += 1
             continue
         eligible.append(case)
-    population = {k: [e.get(k) for e in eligible] for k in ('pre20', 'intensity', 'valuation_percentile')}
+    optional_state = tuple(k for k in ('event_pre20', 'realized_since_event') if finite(target.get(k)))
+    population = {k: [e.get(k) for e in eligible] for k in ('pre20', 'intensity', 'valuation_percentile')+optional_state}
     matched = []
     for case in eligible:
         mismatch = []
         if case.get('market_state') != target.get('market_state'):
             mismatch.append('market_state')
-        for k in ('pre20', 'intensity'):
+        for k in ('pre20', 'intensity')+optional_state:
             a, b = _bin(target.get(k), population[k]), _bin(case.get(k), population[k])
             if a is None or b is None or a != b:
                 mismatch.append(k)
@@ -210,7 +258,7 @@ def match_event_cases(target, cases, cutoff, horizons=HORIZONS):
             median_adverse=median('adverse'), positive_share=sum(v > 0 for v in returns)/len(returns) if returns else None,
             observations=rows, reason='需至少10个非重叠事件及5家公司；分布不是未来概率',
             concentration_warning=len({r['start_date'][:4] for r in rows}) < 2 if rows else False)
-    return dict(horizons=groups, cases=matched[:100], reference_cases=references[:100], excluded=dict(excluded),
+    return dict(status='matched', horizons=groups, cases=matched[:100], reference_cases=references[:100], excluded=dict(excluded),
                 missing_dimensions=missing, optional_missing=optional_missing,
                 matching=dict(method='hierarchical-v1', bins={k:[float(v) for v in np.quantile([v for v in vs if finite(v)], [.25,.75])] if any(finite(v) for v in vs) else [] for k,vs in population.items()}),
                 limitations=['事件表现为条件相关性，不证明因果；未知历史行业不能用今日分类替代',

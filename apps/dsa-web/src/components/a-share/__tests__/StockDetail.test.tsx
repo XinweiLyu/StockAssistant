@@ -1,5 +1,5 @@
 import { render,screen,waitFor,fireEvent } from '@testing-library/react';
-import { vi,it,expect,beforeEach } from 'vitest';
+import { vi,it,expect,beforeEach,afterEach,describe } from 'vitest';
 import StockDetail from '../StockDetail';
 import { aShareMarketApi } from '../../../api/aShareMarket';
 import { historyApi } from '../../../api/history';
@@ -7,6 +7,7 @@ import { strategyPrice } from '../savedAnalysis';
 import { outlookFixture } from './outlookFixture';
 import { unavailableLive } from './liveFixture';
 import { integratedFixture,integratedHistory } from './integratedFixture';
+import type { Candidate } from '../../../types/aShare';
 vi.mock('../../../api/aShareMarket',()=>({aShareMarketApi:{stock:vi.fn(),history:vi.fn(),scenarios:vi.fn(),outlook:vi.fn(),live:vi.fn(),refreshPrice:vi.fn(),integrated:vi.fn(),prepareResearch:vi.fn(),generateIntegrated:vi.fn()}}));
 vi.mock('../../../api/history',()=>({historyApi:{getList:vi.fn(),getDetail:vi.fn()}}));
 const page=(code:string,close:number)=>({code,state:'ready',items:[{date:'2026-10-09',open:close,high:close+1,low:close-1,close}],source:'fixture',adjust:'qfq' as const,adjustment_basis:'b1',requested_start:'2026-01-01',requested_end:'2026-10-09',actual_end:'2026-10-09',limitations:[]});
@@ -144,4 +145,72 @@ it('shows the failed manager beside the empty chart without inventing a forecast
  await waitFor(()=>expect(screen.getByRole('region',{name:'K线与指标'})).toHaveTextContent('综合经理'));
  expect(screen.getByRole('region',{name:'K线与指标'})).toHaveTextContent('未生成');
  expect(container.querySelector('[data-integrated-code]')).not.toBeInTheDocument();
+});
+
+it('explains that earlier nodes remain when the selected terminal horizon is missing',async()=>{
+  const state=integratedFixture();state.report!.plans=[];
+  vi.mocked(aShareMarketApi.integrated).mockResolvedValue(state);
+  vi.mocked(aShareMarketApi.history).mockImplementation(async(_code,_start,_end,adjust)=>integratedHistory(adjust));
+  const {container}=render(<StockDetail code="000807" onResearch={()=>{}} onWatchlist={()=>{}}/>);
+  await waitFor(()=>expect(container.querySelector('[data-integrated-code]')).toBeInTheDocument());
+  fireEvent.change(screen.getByLabelText('综合研究期限'),{target:{value:'60'}});
+  await waitFor(()=>expect(container.querySelector('[data-integrated-code]')).toBeInTheDocument());
+  expect(screen.getByRole('region',{name:'K线与指标'})).toHaveTextContent(/60.*较早期限.*保留/);
+  expect(container.querySelector('[data-sessions="20"]')).toBeInTheDocument();
+  expect(container.querySelector('[data-sessions="60"]')).not.toBeInTheDocument();
+  expect(screen.queryByText(/当前无区间线可绘制/)).not.toBeInTheDocument();
+});
+
+describe('rule price history binding',()=>{
+  const currentCandidate=()=>({code:'600000',name:'测试股票',sector:'test',strategy:'trend_v1',score:80,
+    r20:.1,r60:.2,v20:.03,close:25,high:26,atr:1,sma20:24,sma60:23,as_of:'2026-10-09',
+    valid_date:'2026-10-12',source:'fixture',check:{status:'observe',reasons:[]},
+    plan:{entry:26,quantity:100,stop:24,reasons:[]}});
+  beforeEach(()=>{
+    vi.useFakeTimers({toFake:['Date']});
+    vi.setSystemTime(new Date('2026-10-12T10:00:00+08:00'));
+    vi.mocked(aShareMarketApi.history).mockImplementation(async(code,_start,_end,adjust)=>({...page(code,adjust==='raw'?25:20),adjust}));
+  });
+  afterEach(()=>vi.useRealTimers());
+
+  it('keeps the current same-stock rule mapped to its own complete-day anchor',async()=>{
+    const {container}=render(<StockDetail code="600000" candidate={currentCandidate()} onResearch={()=>{}} onWatchlist={()=>{}}/>);
+    await screen.findByRole('img',{name:'历史价格与指标'});
+    const level=container.querySelector('[data-level-id="rule-entry"]');
+    expect(level).toBeInTheDocument();
+    expect(level!.querySelector('title')).toHaveTextContent('¥20.80');
+  });
+
+  it.each([
+    ['expired status',{check:{status:'expired',reasons:['条件已失效']}},/已失效/],
+    ['blocked status',{check:{status:'blocked',reasons:['已核实重大风险']}},/风险阻止/],
+    ['past validity date',{valid_date:'2026-10-09'},/已失效/],
+    ['future validity date',{valid_date:'2026-10-13'},/尚未到有效日/],
+    ['another stock',{code:'600001'},/证券不匹配/],
+    ['missing research date',{as_of:undefined},/历史参考/],
+  ] as const)('preserves %s plans as records without current rule lines',async(_label,changes,reason)=>{
+    const candidate={...currentCandidate(),...changes};
+    const {container}=render(<StockDetail code="600000" candidate={candidate as Candidate} onResearch={()=>{}} onWatchlist={()=>{}}/>);
+    await screen.findByRole('img',{name:'历史价格与指标'});
+    expect(container.querySelector('[data-level-id^="rule-"]')).not.toBeInTheDocument();
+    const card=container.querySelector('.am-rule-plan');
+    expect(card).toBeInTheDocument();
+    expect(card).toHaveTextContent('26');
+    expect(card).toHaveTextContent(reason);
+  });
+
+  it('does not move an old plan to a newer complete day or a manually selected historical end date',async()=>{
+    vi.mocked(aShareMarketApi.history).mockImplementation(async(code,_start,end,adjust)=>({
+      ...page(code,adjust==='raw'?25:20),adjust,actual_end:end==='2026-10-08'?'2026-10-08':'2026-10-12',
+      items:[{...page(code,adjust==='raw'?25:20).items[0],date:end==='2026-10-08'?'2026-10-08':'2026-10-12'}],
+    }));
+    const {container}=render(<StockDetail code="600000" candidate={currentCandidate()} onResearch={()=>{}} onWatchlist={()=>{}}/>);
+    await screen.findByText(/2026-10-12 · 开 20/);
+    expect(container.querySelector('[data-level-id^="rule-"]')).not.toBeInTheDocument();
+    expect(container.querySelector('.am-rule-plan')).toHaveTextContent(/历史参考/);
+    fireEvent.change(screen.getByLabelText('截止日期'),{target:{value:'2026-10-08'}});
+    await screen.findByText(/2026-10-08 · 开 20/);
+    expect(container.querySelector('[data-level-id^="rule-"]')).not.toBeInTheDocument();
+    expect(container.querySelector('.am-rule-plan')).toHaveTextContent('2026-10-09');
+  });
 });

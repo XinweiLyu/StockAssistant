@@ -1,4 +1,5 @@
 import type { MarketBar, Adjust, QuantOutlook, HistoryPage, ChartForecast, LivePriceResult, ChartLiveBar, IntegratedResearchResult, ChartIntegratedForecast, ChartPriceLevel } from '../../types/aShareMarket';
+import type { Candidate } from '../../types/aShare';
 export function movingAverage(values:number[],window:number):(number|null)[]{
   let sum=0; return values.map((v,i)=>{sum+=v;if(i>=window)sum-=values[i-window];return i>=window-1?sum/window:null;});
 }
@@ -44,6 +45,17 @@ export function normalizedComparison(series:{name:string;items:MarketBar[]}[]){
 
 export function priceFamily(source:string|null|undefined){return source?.startsWith('tushare')?'tushare':source;}
 
+export function ruleOverlayReason(candidate:Candidate|undefined,raw:HistoryPage|undefined,history:HistoryPage|undefined,code:string,currentDay:string):string|undefined {
+  if(!candidate)return;
+  if(candidate.code!==code)return '规则计划与当前证券不匹配，仅保留历史参考，未叠加到K线。';
+  if(candidate.check?.status==='blocked')return '规则计划已被风险阻止，仅保留记录，未叠加到K线。';
+  if(candidate.check?.status==='expired'||(candidate.valid_date&&candidate.valid_date<currentDay))return '历史规则计划已失效，仅供对照，未叠加到K线。';
+  if(candidate.valid_date&&candidate.valid_date>currentDay)return '规则计划尚未到有效日，仅供对照，未叠加到K线。';
+  if(!candidate.as_of||!candidate.valid_date||candidate.as_of>=candidate.valid_date||!['observe','triggered'].includes(candidate.check?.status||''))return '规则计划缺少有效的研究日期或当前核实状态，仅保留历史参考，未叠加到K线。';
+  const r=raw?.items.at(-1),q=history?.items.at(-1),source=priceFamily(candidate.source);
+  if(!raw||!history||raw.code!==code||history.code!==code||raw.adjust!=='raw'||![raw.state,history.state].every(s=>['ready','partial'].includes(s))||!r||!q||r.date!==candidate.as_of||q.date!==candidate.as_of||!source||source!==priceFamily(raw.source)||source!==priceFamily(history.source)||!Number.isFinite(candidate.close)||candidate.close<=0||Math.abs(candidate.close-r.close)>Math.max(1,Math.abs(r.close))*1e-8)return '规则计划的研究日期、价格或来源与当前K线不匹配，仅保留历史参考，未叠加到K线。';
+}
+
 export function integratedChartLayer(state:IntegratedResearchResult|undefined,raw:HistoryPage|undefined,history:HistoryPage|undefined,adjust:Adjust,code:string,horizon:number):{forecast?:ChartIntegratedForecast;levels:ChartPriceLevel[]}|undefined {
   const report=state?.report,binding=report?.history_binding;
   if(!report||!binding||state?.status==='stale'||report.stale||!['complete','partial'].includes(report.status)||!raw||!history)return;
@@ -60,11 +72,15 @@ export function integratedChartLayer(state:IntegratedResearchResult|undefined,ra
   const published=report.forecasts.filter(f=>[5,20,60].includes(f.horizon_sessions)&&f.horizon_sessions<=horizon&&[f.low,f.high].every(v=>Number.isFinite(v)&&v>0)&&f.low<=f.high);
   const forecasts=published.filter(f=>f.horizon_sessions===horizon);
   let forecast:ChartIntegratedForecast|undefined;
-  if(forecasts.length){
-    const low=Math.min(...forecasts.map(f=>f.low)),high=Math.max(...forecasts.map(f=>f.high)),base=forecasts.find(f=>f.scenario==='base');
-    const median=base?(base.low+base.high)/2:(low+high)/2;
+  if(published.length){
+    const points:ChartIntegratedForecast['points']=[];
+    if(forecasts.length){
+      const low=Math.min(...forecasts.map(f=>f.low)),high=Math.max(...forecasts.map(f=>f.high)),base=forecasts.find(f=>f.scenario==='base');
+      const median=base?(base.low+base.high)/2:(low+high)/2;
+      points.push({sessions:horizon,date:null,low:convert(low)!,median:convert(median)!,high:convert(high)!});
+    }
     forecast={code,anchor_date:binding.anchor_date,anchor_price:q.close,horizon_sessions:horizon,target_date:null,
-      points:[{sessions:horizon,date:null,low:convert(low)!,median:convert(median)!,high:convert(high)!}],
+      points,
       scenarios:(['bear','base','bull'] as const).map(kind=>({scenario:kind,points:published.filter(f=>f.scenario===kind)
         .sort((a,b)=>a.horizon_sessions-b.horizon_sessions).map(f=>({sessions:f.horizon_sessions,date:null,
           low:convert(f.low)!,median:convert(f.low+(f.high-f.low)/2)!,high:convert(f.high)!,conditions:f.conditions,sources:f.sources}))})).filter(s=>s.points.length>0),

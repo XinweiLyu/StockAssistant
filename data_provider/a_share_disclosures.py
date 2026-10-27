@@ -7,7 +7,7 @@ import subprocess
 import sys
 from urllib.parse import urlsplit, parse_qs
 
-from src.schemas.a_share_integrated import digest, stamp
+from src.schemas.a_share_integrated import digest, stamp, earnings_stage
 
 
 def disclosure_pdf_url(url, published_day):
@@ -60,8 +60,8 @@ def normalize_disclosures(code, rows, observed_at):
                 'order' if any(w in title for w in ('合同', '订单', '产能')) else
                 'regulatory' if any(w in title for w in ('诉讼', '处罚', '立案', '监管')) else 'disclosure')
         period = report_period(title)
-        subtype = 'guidance' if '预告' in title else 'flash' if '快报' in title else 'report'
-        family_id = digest([code,kind,period,subtype]) if kind == 'earnings' and period else event_id
+        subtype = {1:'guidance',2:'flash',3:'report'}.get(earnings_stage(title))
+        family_id = digest([code,kind,period,subtype]) if kind == 'earnings' and period and subtype else event_id
         output.append(dict(id=event_id, code=code, family_id=family_id, title=title, kind=kind,
                            direction='unknown', intensity=None, intensity_unit=None,
                            report_period=period, published_at=published,

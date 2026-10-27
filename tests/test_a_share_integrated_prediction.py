@@ -87,6 +87,95 @@ def test_low_reward_risk_is_observe_without_raising_target():
     assert result['plans'][0]['targets']==[21.,22.]
 
 
+@pytest.mark.parametrize('valid_until', ['20260101', '20261231', '2026-W01-1',
+    '2026-1-01', '2026-02-30', '2026-10-20T00:00:00+08:00', ' 2026-10-20 '])
+def test_plan_dates_require_canonical_calendar_dates(valid_until):
+    from pydantic import ValidationError
+    from src.schemas.a_share_integrated import IntegratedPlan
+
+    p=plan();p['valid_until']=valid_until
+    with pytest.raises(ValidationError):
+        IntegratedPlan.model_validate(p)
+
+
+@pytest.mark.parametrize('valid_until', ['2026-01-01', '20260101', '2026-W01-1'])
+def test_expired_plans_cannot_bypass_cutoff_with_alternative_iso_date_forms(valid_until):
+    p=plan();p['valid_until']=valid_until
+    result=validate_integrated_prediction(dict(plans=[p]),bundle(),{'P1','F1','B20'})
+    assert result['plans']==[]
+    assert result['rejected']==1
+
+
+@pytest.mark.parametrize('valid_until', ['2026-10-16', '2026-10-20'])
+def test_unexpired_canonical_plan_dates_are_preserved(valid_until):
+    p=plan();p['valid_until']=valid_until
+    result=validate_integrated_prediction(dict(plans=[p]),bundle(),{'P1','F1','B20'})
+    assert result['plans'][0]['valid_until']==valid_until
+    assert result['plans'][0]['status']=='conditional'
+
+
+def test_reused_friday_bundle_cannot_publish_expired_saturday_plan_on_sunday():
+    p=plan();p['valid_until']='2026-10-17'
+    result=validate_integrated_prediction(dict(forecasts=[forecast()],plans=[p]),bundle(),
+        {'P1','F1','B20'},as_of_day='2026-10-18')
+    assert result['plans']==[]
+    assert len(result['forecasts'])==1
+    assert result['rejected']==1
+
+
+def test_issuance_day_cannot_weaken_the_frozen_bundle_expiry_cutoff():
+    p=plan();p['valid_until']='2026-10-15'
+    result=validate_integrated_prediction(dict(plans=[p]),bundle(),
+        {'P1','F1','B20'},as_of_day='2026-10-14')
+    assert result['plans']==[]
+    assert result['rejected']==1
+
+
+@pytest.mark.parametrize('changes', [
+    dict(targets=[],entry_low=1.),
+    dict(entry_low=None,targets=[-100.]),
+    dict(stop_reference=None,targets=[30.]),
+    dict(entry_high=None,targets=[26.,25.]),
+    dict(targets=[],entry_low=21.,entry_high=20.),
+    dict(entry_low=None,stop_reference=21.),
+    dict(stop_reference=None,targets=[19.]),
+    dict(entry_low=None,second_entry=dict(low=24.,high=19.,conditions=['核对条件'],invalidation=['核对失效'])),
+    dict(entry_low=None,second_entry=dict(low=1.,high=19.,conditions=['核对条件'],invalidation=['核对失效'])),
+])
+def test_incomplete_plans_still_reject_unsupported_or_inverted_prices(changes):
+    p=plan();p.update(changes)
+    result=validate_integrated_prediction(dict(plans=[p]),bundle(),{'P1','F1','B20'})
+    assert result['plans']==[]
+    assert result['rejected']==1
+
+
+def test_partial_plan_with_valid_supplied_prices_remains_an_observation():
+    p=plan();p.update(entry_low=None)
+    result=validate_integrated_prediction(dict(plans=[p]),bundle(),{'P1','F1','B20'})
+    assert result['plans'][0]['status']=='observe'
+    assert result['plans'][0]['entry_low'] is None
+    assert result['plans'][0]['targets']==[25.,26.]
+    assert result['rejected']==0
+
+
+@pytest.mark.parametrize('changes', [dict(stop_reference=1.e100),dict(targets=[1.e100]),
+    dict(second_entry=dict(low=19.,high=1.e100,conditions=['核对条件'],invalidation=['核对失效']))])
+def test_unrepresentable_plan_prices_are_rejected_without_losing_valid_forecasts(changes):
+    p=plan();p.update(changes)
+    result=validate_integrated_prediction(dict(forecasts=[forecast()],plans=[p]),bundle(),{'P1','F1','B20'})
+    assert result['plans']==[]
+    assert len(result['forecasts'])==1
+    assert result['status']=='partial'
+    assert result['rejected']==1
+
+
+def test_current_verified_major_risk_blocks_every_strategy_independent_of_old_baseline():
+    b=bundle();b['context']['major_risk']=True
+    assert not any(s['eligible'] for s in strategy_candidates(b,2.))
+    result=validate_integrated_prediction(dict(plans=[plan()]),b,{'P1','F1','B20'})
+    assert result['plans'][0]['status']=='observe'
+
+
 def test_verified_risk_or_long_downtrend_cannot_be_called_trend_reversal():
     b=bundle();b['baseline']['trends'][2]['state']='down'
     assert not any(s['strategy_kind']=='trend_pullback' and s['eligible'] for s in strategy_candidates(b,2.))
@@ -119,6 +208,47 @@ def test_integrated_roles_receive_real_financial_and_prior_evidence(tmp_path):
     changed=bundle();changed['data_hash']='frozen-b';changed['facts'][0]['raw_fields']['PARENTNETPROFIT']=456.
     engine.run_integrated(changed,settings,'2026-10-16',manual=True)
     assert any('456' in json.dumps(i) for i in inputs[6:])
+
+
+@pytest.mark.parametrize('valid_until', ['2026-10-17','20261020','2026-W43-1','2026-02-30',None])
+def test_complete_cache_with_expired_or_invalid_plan_dates_is_regenerated(tmp_path,valid_until):
+    from src.schemas.a_share_integrated import VERSION, digest
+
+    repo=AssistantRepository(create_engine('sqlite:///'+str(tmp_path/'cache.db')))
+    b=bundle();saved_plan=plan();saved_plan['valid_until']=valid_until
+    repo.append('free','integrated_cache',digest([VERSION,b['data_hash'],'configured']),
+        dict(status='complete',forecasts=[forecast()],plans=[saved_plan]))
+    def completion(messages,model):
+        data=json.loads(messages[1]['content'])
+        value=dict(claims=[dict(text='根据已提供资料核对条件',sources=['P1'])])
+        if data['role']=='research_manager':
+            value.update(forecasts=[forecast()],plans=[plan()])
+        return value
+
+    result=ResearchEngine(repo,completion).run_integrated(b,
+        AssistantSettings(mode='free',model='configured',research_enabled=True),'2026-10-18')
+    assert result['cached'] is False
+    assert result['calls']==6
+    assert result['plans'][0]['valid_until']=='2026-10-20'
+
+
+@pytest.mark.parametrize('cached_plans', [[],[dict(valid_until='2026-10-18')],[dict(valid_until='2026-10-20')]])
+def test_complete_cache_with_unexpired_or_no_plans_is_reused_without_model_calls(tmp_path,cached_plans):
+    from src.schemas.a_share_integrated import VERSION, digest
+
+    repo=AssistantRepository(create_engine('sqlite:///'+str(tmp_path/'cache.db')))
+    b=bundle()
+    repo.append('free','integrated_cache',digest([VERSION,b['data_hash'],'configured']),
+        dict(status='complete',forecasts=[forecast()],plans=cached_plans))
+    def unexpected_completion(*_):
+        raise AssertionError('有效缓存不应调用研究模型')
+
+    result=ResearchEngine(repo,unexpected_completion).run_integrated(b,
+        AssistantSettings(mode='free',model='configured',research_enabled=True),'2026-10-18')
+    assert result['cached'] is True
+    assert result['calls']==0
+    assert result['forecasts'][0]['low']==21.
+    assert result['plans']==cached_plans
 
 
 def test_failed_role_preserves_others_and_does_not_hide_attempts(tmp_path):

@@ -96,3 +96,33 @@ it('rechecks only the current filtered cached list when a selected-stock refresh
   expect(within(row).queryByText('+0.00%')).not.toBeInTheDocument();
   expect(screen.getByLabelText('搜索股票')).toHaveValue('000807');
 });
+
+it('returns to the last available watchlist page after removing its final row',async()=>{
+  let removed=false;
+  const stock={code:'000807',name:'云铝股份',source:'fixture',quote:null,industries:[],concepts:[]};
+  vi.mocked(aShareMarketApi.stocks).mockImplementation(async params=>({
+    items:removed&&params.page===2?[]:[stock],total:removed?50:51,page:Number(params.page),page_size:50,
+  }));
+  const props={onSelectStock:()=>{},industries:[],concepts:[],sectorStatus:'ready' as const,onSelectIndustry:()=>{},onSelectConcept:()=>{},onClearSector:()=>{}};
+  const {rerender}=render(<MarketStockBrowser {...props} watchlistSignature="000001|000807"/>);
+  fireEvent.click(screen.getByRole('button',{name:'自选股票'}));
+  await act(async()=>{await vi.advanceTimersByTimeAsync(250);});
+  fireEvent.click(screen.getByRole('button',{name:'下页'}));
+  await act(async()=>{await vi.advanceTimersByTimeAsync(250);});
+  expect(screen.getByText('2 / 2 · 51 只')).toBeInTheDocument();
+  removed=true;rerender(<MarketStockBrowser {...props} watchlistSignature="000001"/>);
+  await act(async()=>{await vi.advanceTimersByTimeAsync(250);});
+  await act(async()=>{await vi.advanceTimersByTimeAsync(250);});
+  expect(screen.getByText('1 / 1 · 50 只')).toBeInTheDocument();
+  expect(screen.getByRole('button',{name:'云铝股份 000807'})).toBeInTheDocument();
+});
+
+it('does not refetch an all-stocks list merely because the watchlist changes',async()=>{
+  const props={onSelectStock:()=>{},industries:[],concepts:[],sectorStatus:'ready' as const,onSelectIndustry:()=>{},onSelectConcept:()=>{},onClearSector:()=>{}};
+  const {rerender}=render(<MarketStockBrowser {...props} watchlistSignature="000807"/>);
+  await act(async()=>{await vi.advanceTimersByTimeAsync(250);});
+  const calls=vi.mocked(aShareMarketApi.stocks).mock.calls.length;
+  rerender(<MarketStockBrowser {...props} watchlistSignature=""/>);
+  await act(async()=>{await vi.advanceTimersByTimeAsync(250);});
+  expect(aShareMarketApi.stocks).toHaveBeenCalledTimes(calls);
+});

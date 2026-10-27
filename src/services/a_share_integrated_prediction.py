@@ -1,16 +1,19 @@
 """Hard validation for explicitly uncalibrated, referenced scenario research."""
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP, ROUND_CEILING, ROUND_FLOOR
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, ROUND_CEILING, ROUND_FLOOR
 import re
 from pydantic import ValidationError
-from src.schemas.a_share_integrated import IntegratedForecast, IntegratedPlan
+from src.schemas.a_share_integrated import IntegratedForecast, IntegratedPlan, canonical_plan_day
 from src.services.a_share_event_cases import finite, effective_event_families
 
 UNSAFE = re.compile(r'概率|胜率|保证.*?(?:收益|盈利)|保本|必涨|稳赚|仓位|股数|下单|立即买|立即卖|\b(?:probability|quantity|guarantee|order)\b', re.I)
 
 
 def tick_price(value, rounding=ROUND_HALF_UP):
-    return float(Decimal(str(value)).quantize(Decimal('.01'),rounding=rounding))
+    try:
+        return float(Decimal(str(value)).quantize(Decimal('.01'),rounding=rounding))
+    except InvalidOperation as exc:
+        raise ValueError('价位无法转换为0.01元单位') from exc
 
 
 def numeric_references(bundle):
@@ -30,7 +33,7 @@ def strategy_candidates(bundle, min_reward_risk):
     base = bundle.get('baseline', {})
     context = bundle.get('context', {})
     reasons = list(base.get('plan', {}).get('reasons', []))
-    blocked = (not context.get('identity_verified') or context.get('st') is not False or
+    blocked = (context.get('major_risk') is True or not context.get('identity_verified') or context.get('st') is not False or
                context.get('board') != 'main' or any('重大风险' in r for r in reasons))
     trends = {r['period']:r.get('state') for r in base.get('trends', [])}
     environment = base.get('environment', {})
@@ -45,7 +48,7 @@ def strategy_candidates(bundle, min_reward_risk):
             for kind,condition in [('trend_pullback',trend),('range_reversion',range_state),('event_followthrough',event)]]
 
 
-def validate_integrated_prediction(value, bundle, sent_ids, min_reward_risk=2.):
+def validate_integrated_prediction(value, bundle, sent_ids, min_reward_risk=2., *, as_of_day=None):
     result = dict(status='insufficient', forecasts=[], plans=[], rejected=0, rejections=[], calibrated=False,
         limitations=['综合价位为研究估计，尚未校准；引用和范围校验不证明经济推导正确',
                      '模型评分及情景覆盖不是胜率；尚未验证综合策略组合收益'])
@@ -103,24 +106,34 @@ def validate_integrated_prediction(value, bundle, sent_ids, min_reward_risk=2.):
             if data['second_entry']:
                 for key in ('low','high'):
                     data['second_entry'][key]=tick_price(data['second_entry'][key])
-            date.fromisoformat(data['valid_until'])
-            if data['valid_until'] < bundle['cutoff'][:10]:
+            expiry_cutoff=date.fromisoformat(bundle['cutoff'][:10])
+            if as_of_day is not None:
+                expiry_cutoff=max(expiry_cutoff,date.fromisoformat(canonical_plan_day(as_of_day)))
+            if date.fromisoformat(data['valid_until']) < expiry_cutoff:
                 raise ValueError('计划已过有效期')
             prices=[data['entry_low'],data['entry_high'],data['stop_reference']]
             secondary=data['second_entry']
+            lo,hi,stop=prices
+            supplied=[p for p in prices if p is not None]+data['targets']
+            if secondary:
+                supplied.extend((secondary['low'],secondary['high']))
+            if any(not finite(p) or p<=0 or not lower-1e-8<=p<=upper+1e-8 for p in supplied):
+                raise ValueError('价位超出所引数值参考范围')
+            if ((lo is not None and hi is not None and lo>hi) or
+                (stop is not None and any(p is not None and p<=stop for p in (lo,hi))) or
+                data['targets']!=sorted(data['targets']) or
+                (data['targets'] and any(p is not None and p>=data['targets'][0] for p in prices))):
+                raise ValueError('价位顺序错误')
+            if secondary and (secondary['low']>secondary['high'] or
+                (stop is not None and stop>=secondary['low']) or
+                (data['targets'] and secondary['high']>=data['targets'][0])):
+                raise ValueError('二次买入区间或止损关系错误')
             reasons=[]
             ratio=None
             net_ratio=None
             if any(p is None for p in prices) or not data['targets']:
                 reasons.append('缺少完整入场、止损或目标依据')
             else:
-                lo,hi,stop=prices
-                if not lower-1e-8 <= stop < lo <= hi <= upper+1e-8:
-                    raise ValueError('入场或止损超出所引数值参考范围')
-                if not stop < lo <= hi < min(data['targets']) or data['targets'] != sorted(data['targets']):
-                    raise ValueError('价位顺序错误')
-                if not all(finite(t) and 0<t<=upper+1e-8 for t in data['targets']):
-                    raise ValueError('盈利目标超出数值依据')
                 ratio=(data['targets'][0]-hi)/(hi-stop)
                 # Conservative one-lot illustration, not an executed or historical cost model.
                 from src.services.a_share_rules import DEFAULT_RISK
@@ -130,8 +143,6 @@ def validate_integrated_prediction(value, bundle, sent_ids, min_reward_risk=2.):
                     reasons.append('成本空间不足：按100股示例、最低佣金及税费/滑点预算估计；实际成交成本未验证')
                 if ratio < min_reward_risk:
                     reasons.append('潜在收益/风险不足，未抬高目标价')
-                if secondary and not lower-1e-8 <= stop < secondary['low'] <= secondary['high'] < min(data['targets']):
-                    raise ValueError('二次买入区间或止损关系错误')
                 if secondary and (min(data['targets'])-secondary['high'])/(secondary['high']-stop) < min_reward_risk:
                     reasons.append('二次买入条件的潜在收益/风险不足')
                 if secondary and (min(data['targets'])-secondary['high']-unit_cost)/(secondary['high']-stop+unit_cost) < min_reward_risk:

@@ -39,6 +39,13 @@ it('marks stale research and keeps its historical result visible',()=>{
   expect(screen.getByText('¥19.00 – ¥20.00')).toBeInTheDocument();
 });
 
+it('explains verified-risk invalidation even when the price has not changed',()=>{
+  const state={...integratedFixture(),status:'stale',stale_reasons:['证券资格或已核实重大风险已变化，旧策略仅供历史对照']};
+  render(<IntegratedResearchPanel result={state} horizon={20} onHorizon={()=>{}} onPrepare={()=>{}} onGenerate={()=>{}}/>);
+  expect(screen.getByText(/已核实重大风险已变化/)).toBeInTheDocument();
+  expect(screen.getByText('¥19.00 – ¥20.00')).toBeInTheDocument();
+});
+
 it('shows the absence of matured validation and advances peer batches',()=>{
   const prepare=vi.fn(),state=integratedFixture();
   state.validation={status:'insufficient',snapshots:1,portfolio_return:null,costs_verified:false,horizons:{'20':{matured:0,non_overlapping_samples:0,status:'insufficient',mean_absolute_error:null,direction_accuracy:null,observed_scenario_coverage:null,mean_adverse:null}},limitations:[],comparison:{horizons:{'20':{samples:0,unchanged_price_mae:null,price_model_mae:null,integrated_mae:null}}}};
@@ -172,4 +179,18 @@ it('does not carry pending actions to a different stock or overwrite it on ackno
   await act(async()=>{resolvePost({accepted:true,status:'running'});await operation;});
   expect(result.current.result?.code).toBe('600000');
   expect(result.current.busy).toBe(false);
+});
+
+it('explains zero samples separately from missing text and shows continuing event lifecycle',()=>{
+  const state=integratedFixture();
+  state.bundle!.cases.status='no_target';
+  state.bundle!.cases.message='没有可量化跟踪事件，尚未开始历史匹配';
+  state.bundle!.cases.diagnostics={announcements:818,verified_texts:6,tracking_events:8,quantified_targets:0,unquantified_tracking:8,omitted_targets:0};
+  state.bundle!.coverage=[{category:'disclosures',status:'partial',count:818,texts:6,attempted:6,pending:812,retry_wait:2}];
+  state.bundle!.events=[{id:'old-earnings',title:'半年度业绩预告',age_sessions:60,text_status:'ready',lifecycle_state:'tracking',review_sessions:120,review_reason:'继续核查业绩兑现'}];
+  render(<IntegratedResearchPanel result={state} horizon={20} onHorizon={()=>{}} onPrepare={()=>{}} onGenerate={()=>{}}/>);
+  expect(screen.getByText('没有可量化跟踪事件，尚未开始历史匹配')).toBeInTheDocument();
+  expect(screen.getByText(/待补正文 812/)).toBeInTheDocument();
+  expect(screen.getByText(/已过60个交易日/)).toBeInTheDocument();
+  expect(screen.getByText(/继续核查业绩兑现/)).toBeInTheDocument();
 });

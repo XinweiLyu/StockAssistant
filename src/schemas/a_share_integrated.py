@@ -4,12 +4,42 @@ from __future__ import annotations
 from datetime import datetime, date, time
 import hashlib
 import json
+import re
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 TZ = ZoneInfo('Asia/Shanghai')
-VERSION = 'integrated-research-v4'
+VERSION = 'integrated-research-v6'
+
+
+def canonical_plan_day(value):
+    """Accept a real calendar day only in the persisted YYYY-MM-DD format."""
+    if not isinstance(value, str) or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', value):
+        raise ValueError('计划有效日期须为YYYY-MM-DD格式')
+    return date.fromisoformat(value).isoformat()
+
+
+def earnings_stage(title):
+    """Separate earnings statements from conferences and other administrative notices."""
+    title = re.sub(r'\s+', '', title)
+    # Dates, publication schedules and investor meetings discuss a statement;
+    # they do not constitute a new statement, even if a report is in the title.
+    statement = r'(?:20\d{2}年)?(?:(?:半年度|年度|第?[一二三四]季度|中期)报告|(?:半年度|年度|第?[一二三四]季度|中期)?业绩(?:预告|快报))(?:及其?摘要|摘要)?'
+    timing_action = r'(?:延期|延迟|推迟|暂缓|预约)'
+    schedule = (rf'{timing_action}披露|披露(?:延期|延迟|推迟|暂缓|预约|时间|日期|日程|安排|计划|日)'
+                rf'|{timing_action}(?:公司)?《?{statement}》?的?披露|{statement}的?{timing_action}')
+    meeting = (r'业绩(?:网上|网络|线上|线下|集体)*(?:说明会|交流会)'
+               r'|投资者(?:说明会|交流(?:会|活动)?|沟通(?:会|活动)?|接待日|关系活动|见面会)')
+    if re.search(schedule, title) or re.search(meeting, title):
+        return 0
+    if any(w in title for w in ('预告', '预增', '预减', '预盈', '预亏')):
+        return 1
+    if '快报' in title:
+        return 2
+    if any(w in title for w in ('年度报告', '季度报告', '中期报告')):
+        return 3
+    return 0
 
 
 def digest(value):
@@ -109,3 +139,8 @@ class IntegratedPlan(BaseModel):
     sources: list[str] = Field(min_length=1,max_length=24)
     basis_ids: list[str] = Field(min_length=1,max_length=8)
     derivation: str = Field(min_length=4,max_length=1600)
+
+    @field_validator('valid_until', mode='before')
+    @classmethod
+    def valid_plan_day(cls, value):
+        return canonical_plan_day(value)

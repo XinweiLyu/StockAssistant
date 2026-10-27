@@ -169,3 +169,42 @@ def test_root_reads_peer_progress_separately_without_model_calls(tmp_path):
     svc.market.repo.set_state('free','research_peers:600000',dict(task_ids=[task],next_offset=20))
     result=svc.integrated.get('600000')
     assert result['peer_progress']==dict(total=1,complete=0,pending=1,running=0,failed=0,next_offset=20)
+
+
+def test_long_lived_earnings_reach_separate_same_age_cohorts_even_with_newer_title_only_news(tmp_path):
+    svc, end = long_market(tmp_path)
+    days = [d for d in svc.market.calendar() if d <= end]
+    def event(identity, day, kind='earnings', text=True):
+        return dict(id=identity, code='600000', family_id=identity, kind=kind, title='业绩预告',
+                    published_at=day, text_status='ready' if text else 'missing',
+                    text='净利润同比增长50%' if text else '')
+    bundle = svc.integrated.freeze('600000', facts(), [event('a', days[-61]), event('b', days[-31]), event('recent', end, text=False)])
+    assert {c['target_event']['id'] for c in bundle['cases']['cohorts']} == {'a','b'}
+    assert {c['elapsed_sessions'] for c in bundle['cases']['cohorts']} == {60,30}
+    assert bundle['cases']['target_event']['id'] == 'b'
+    assert bundle['cases']['diagnostics']['tracking_events'] == 3
+    assert bundle['cases']['diagnostics']['quantified_targets'] == 2
+    assert next(e for e in bundle['events'] if e['id'] == 'a')['tracking_active']
+
+
+def test_later_actual_report_supersedes_same_period_guidance_even_before_text_is_fetched(tmp_path):
+    svc,end=long_market(tmp_path)
+    days=[d for d in svc.market.calendar() if d<=end]
+    guidance=dict(id='guidance',code='600000',kind='earnings',family_id='guidance',report_period='2023-06-30',
+        title='2023年半年度业绩预告',published_at=days[-61],text_status='ready',text='净利润同比增长50%')
+    actual=dict(guidance,id='actual',family_id='actual',title='2023年半年度报告',published_at=days[-10],text_status='missing',text='')
+    bundle=svc.integrated.freeze('600000',facts(),[guidance,actual])
+    assert bundle['cases']['target_event'] is None
+    old=next(e for e in bundle['events'] if e['id']=='guidance')
+    assert old['lifecycle_state']=='superseded' and not old['active_catalyst']
+
+
+def test_coverage_counts_raw_announcements_while_tracking_counts_effective_families(tmp_path):
+    svc,end=long_market(tmp_path)
+    first=dict(id='first',code='600000',family_id='same',kind='earnings',title='业绩预告',published_at=end,
+        text_status='ready',text='净利润同比增长50%')
+    second=dict(first,id='second')
+    bundle=svc.integrated.freeze('600000',facts(),[first,second])
+    assert bundle['cases']['diagnostics']['announcements']==2
+    assert bundle['cases']['diagnostics']['verified_texts']==2
+    assert bundle['cases']['diagnostics']['tracking_events']==1
