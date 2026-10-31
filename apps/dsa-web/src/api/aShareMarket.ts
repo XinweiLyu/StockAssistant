@@ -1,8 +1,16 @@
+import type {ValueResearchResult,ValueAction,ValueAssumptions,ValueReport,ValueSnapshot,ValueSupplement} from '../types/aShareValue';
 import apiClient from './index';
 import type { Adjust, CatalogPage, HistoryPage, MarketJobs, MarketStock, PriceScenarioResult, QuantOutlook, LivePriceResult, Sector, SectorMembersPage, IntegratedResearchResult, ResearchAction } from '../types/aShareMarket';
 const BASE='/api/v1/a-share/market';
 async function get<T>(path:string,params?:Record<string,unknown>,signal?:AbortSignal):Promise<T>{ return (await apiClient.get<T>(BASE+path,{params,signal})).data; }
 export const aShareMarketApi={
+  getValue:(code:string,signal?:AbortSignal)=>get<ValueResearchResult>('/stocks/'+encodeURIComponent(code)+'/value-research',undefined,signal),
+  prepareValue:async(code:string,peerOffset=0,refresh=false,signal?:AbortSignal):Promise<ValueAction>=>(await apiClient.post<ValueAction>(BASE+'/stocks/'+encodeURIComponent(code)+'/value-data',{peer_offset:peerOffset,refresh},{signal})).data,
+  generateValue:async(code:string,snapshotId:string,force=false,signal?:AbortSignal):Promise<ValueAction>=>(await apiClient.post<ValueAction>(BASE+'/stocks/'+encodeURIComponent(code)+'/value-research',{snapshot_id:snapshotId,force},{signal})).data,
+  saveValueAssumptions:async(code:string,snapshotId:string,revision:number,assumptions:ValueAssumptions,confirmed:boolean,signal?:AbortSignal):Promise<ValueAssumptions>=>(await apiClient.put<ValueAssumptions>(BASE+'/stocks/'+encodeURIComponent(code)+'/value-assumptions',{snapshot_id:snapshotId,expected_revision:revision,assumptions,confirmed},{signal})).data,
+  evaluateValue:async(code:string,snapshotId:string,revision:number,signal?:AbortSignal):Promise<ValueReport>=>(await apiClient.post<ValueReport>(BASE+'/stocks/'+encodeURIComponent(code)+'/value-evaluate',{snapshot_id:snapshotId,assumptions_revision:revision},{signal})).data,
+  supplementValue:async(code:string,snapshotId:string,facts:ValueSupplement[],signal?:AbortSignal):Promise<ValueSnapshot>=>(await apiClient.post<ValueSnapshot>(BASE+'/stocks/'+encodeURIComponent(code)+'/value-supplement',{snapshot_id:snapshotId,facts,attested:true},{signal})).data,
+
   stocks:(params:Record<string,unknown>,signal?:AbortSignal)=>get<CatalogPage>('/stocks',params,signal),
   stock:(code:string,signal?:AbortSignal)=>get<MarketStock>('/stocks/'+encodeURIComponent(code),undefined,signal),
   live:(code:string,signal?:AbortSignal)=>get<LivePriceResult>('/stocks/'+encodeURIComponent(code)+'/live',undefined,signal),

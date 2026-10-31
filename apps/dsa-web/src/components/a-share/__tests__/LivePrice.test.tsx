@@ -6,7 +6,7 @@ import { historyApi } from '../../../api/history';
 import type { LivePriceResult } from '../../../types/aShareMarket';
 import { liveFixture,unavailableLive } from './liveFixture';
 import { outlookFixture,outlookHistory } from './outlookFixture';
-vi.mock('../../../api/aShareMarket',()=>({aShareMarketApi:{stock:vi.fn(),history:vi.fn(),scenarios:vi.fn(),outlook:vi.fn(),live:vi.fn(),refreshPrice:vi.fn(),integrated:vi.fn(),prepareResearch:vi.fn(),generateIntegrated:vi.fn()}}));
+vi.mock('../../../api/aShareMarket',()=>({aShareMarketApi:{getValue:vi.fn(async(code:string)=>({code,status:"missing"})),stock:vi.fn(),history:vi.fn(),scenarios:vi.fn(),outlook:vi.fn(),live:vi.fn(),refreshPrice:vi.fn(),integrated:vi.fn(),prepareResearch:vi.fn(),generateIntegrated:vi.fn()}}));
 vi.mock('../../../api/history',()=>({historyApi:{getList:vi.fn(),getDetail:vi.fn()}}));
 beforeEach(()=>{
   vi.resetAllMocks();vi.mocked(aShareMarketApi.integrated).mockImplementation(async code=>({code,status:"missing",bundle:null,report:null,demo:false,progress:null,task:null,message:"尚无综合研究"}));vi.useFakeTimers();vi.setSystemTime(new Date('2026-10-14T06:00:00Z'));

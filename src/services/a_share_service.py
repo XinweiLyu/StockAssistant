@@ -106,10 +106,12 @@ class AssistantService:
         from src.repositories.a_share_market_repository import MarketRepository
         from src.services.a_share_market_jobs import MarketJobs
         from src.services.a_share_market_service import MarketService
-        self.market_jobs=MarketJobs(MarketRepository(self.repo.engine),lambda task:self.market.handle_task(task),profile=self.settings.mode,exclude_kinds=['research_data'])
+        self.market_jobs=MarketJobs(MarketRepository(self.repo.engine),lambda task:self.market.handle_task(task),profile=self.settings.mode,exclude_kinds=['research_data','value_research'])
         self.market=MarketService(self,self.market_jobs.repo,self.market_jobs)
         from src.services.a_share_integrated_service import IntegratedResearchService
         self.integrated=IntegratedResearchService(self)
+        from src.services.a_share_value_service import ValueResearchService
+        self.value=ValueResearchService(self)
 
     def save_settings(self, settings):
         if 'research_scope' not in settings.model_fields_set:
@@ -128,6 +130,7 @@ class AssistantService:
                 self.provider=None
                 self.market_jobs.set_profile(settings.mode)
                 self.integrated.jobs.set_profile(settings.mode)
+                self.value.jobs.set_profile(settings.mode)
                 self.check()  # Account/risk changes invalidate the old displayed plan immediately.
             return settings.model_dump()
         finally:
@@ -919,11 +922,13 @@ class AssistantService:
         self._thread.start()
         self.market_jobs.start()
         self.integrated.jobs.start()
+        self.value.jobs.start()
 
     def stop(self):
         self._stop.set()
         self.market_jobs.stop()
         self.integrated.jobs.stop()
+        self.value.jobs.stop()
         if hasattr(self,'_scheduler'):
             self._scheduler.stop()
 

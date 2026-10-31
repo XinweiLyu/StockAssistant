@@ -13,7 +13,7 @@ export interface PriceForecast { scenario:'bear'|'base'|'bull';horizon_sessions:
 export interface PriceScenarioResult { context?:PriceContext|null;trade_levels:AITradeLevels|null;forecasts:PriceForecast[];status:string;model?:string;generated_at?:string;message?:string;limitations?:string[] }
 export type IndicatorName = 'MA5'|'MA10'|'MA20'|'MA60'|'MA120'|'MA250'|'BOLL'|'volume'|'MACD'|'RSI'|'ATR20';
 export type IndicatorSelection = Partial<Record<IndicatorName,boolean>>;
-export interface ChartPriceLevel { id:string;source:'rule'|'ai'|'report'|'quant'|'integrated';kind:string;low:number;high?:number|null;label:string;active:boolean;anchor_date?:string;horizon?:number }
+export interface ChartPriceLevel { id:string;source:'rule'|'ai'|'report'|'quant'|'integrated'|'value';kind:string;low:number;high?:number|null;label:string;active:boolean;anchor_date?:string;horizon?:number }
 export interface MarketJobs { paused:boolean;counts:Record<string,number>;coverage:Coverage;health?:Record<string,{status:string;fetched_at:string}>;tasks?:{id:string;kind:string;state:string;error?:string}[] }
 
 export interface QuantForecastPoint { sessions:number;date:string|null;low:number;median:number;high:number }

@@ -27,8 +27,8 @@ ALLOWED |= {'stock_info_a_code_name','stock_info_bj_name_code','stock_board_indu
 TS_ALLOWED = {'daily','adj_factor','stock_basic','trade_cal','daily_basic','rt_k','news','anns_d','stk_limit','suspend_d'}
 ALLOWED |= {'stock_financial_analysis_indicator_em', 'stock_profit_sheet_by_report_em',
             'stock_balance_sheet_by_report_em', 'stock_cash_flow_sheet_by_report_em',
-            'stock_zh_a_disclosure_report_cninfo', 'stock_value_em'}
-TS_ALLOWED |= {'fina_indicator', 'income', 'cashflow', 'balancesheet'}
+            'stock_zh_a_disclosure_report_cninfo', 'stock_value_em', 'stock_fhps_detail_em'}
+TS_ALLOWED |= {'fina_indicator', 'income', 'cashflow', 'balancesheet', 'dividend'}
 
 
 def permitted_sources(settings):

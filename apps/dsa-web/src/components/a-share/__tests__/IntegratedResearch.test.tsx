@@ -6,7 +6,7 @@ import { integratedChartLayer } from '../priceChartData';
 import PriceChart from '../PriceChart';
 import { aShareMarketApi } from '../../../api/aShareMarket';
 import { integratedFixture,integratedHistory } from './integratedFixture';
-vi.mock('../../../api/aShareMarket',()=>({aShareMarketApi:{integrated:vi.fn(),prepareResearch:vi.fn(),generateIntegrated:vi.fn()}}));
+vi.mock('../../../api/aShareMarket',()=>({aShareMarketApi:{getValue:vi.fn(async(code:string)=>({code,status:"missing"})),integrated:vi.fn(),prepareResearch:vi.fn(),generateIntegrated:vi.fn()}}));
 beforeEach(()=>vi.resetAllMocks());
 
 it('shows evidence coverage, real strategy levels and missing case statistics on the same panel',()=>{

@@ -3,6 +3,15 @@ import {it,expect,vi} from 'vitest';
 import ResearchWorkspaceToolbar from '../ResearchWorkspaceToolbar';
 import {integratedFixture} from './integratedFixture';
 
+it('separates value-only progress from short-term forecasts and exposes its cost',()=>{
+ const generate=vi.fn();
+ render(<ResearchWorkspaceToolbar scope="value" onScope={()=>{}} valueStatus="ready" valueProgress={{phase:'complete',percent:100,message:'价值研究结束'}} horizon={20} onHorizon={()=>{}} onPrepare={()=>{}} onGenerate={generate}/>);
+ expect(screen.queryByRole('region',{name:'未来情景预测区间'})).not.toBeInTheDocument();
+ expect(screen.getByText(/最多一次模型请求/)).toBeInTheDocument();
+ fireEvent.click(screen.getByRole('button',{name:'生成价值研究'}));
+ expect(generate).toHaveBeenCalledOnce();
+});
+
 it('keeps forecast intervals next to the chart and starts only the integrated workflow',()=>{
  const generate=vi.fn(),s=integratedFixture();
  render(<ResearchWorkspaceToolbar result={s} horizon={20} onHorizon={()=>{}} onPrepare={()=>{}} onGenerate={generate} overlayMatched/>);

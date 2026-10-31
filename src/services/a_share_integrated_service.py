@@ -330,10 +330,15 @@ class IntegratedResearchService:
         code, now = payload['code'], self._now()
         end = market.completed_day()
         start = (date.fromisoformat(end)-timedelta(days=1825)).isoformat()
-        for adjust in ('raw','qfq'):
-            market.history(code, start, end, adjust)
+        if not payload.get('value_only'):
+            for adjust in ('raw','qfq'):
+                market.history(code, start, end, adjust)
         source = ResearchSources(svc._provider(), settings)
         financial = source.financials(code, now)
+        distributions = source.distributions(code, now) if payload.get('value_only') and payload.get('include_peers') else None
+        if payload.get('value_only') and payload.get('include_peers'):
+            capital = source.capital(code, now)
+            financial['value_facts'] = financial.get('value_facts', [])+capital['facts']
         valuation = source.valuation(code, now)
         disclosure = source.disclosures(code, start, now[:10], now)
         previous = svc.repo.latest(self.profile, 'research_data', key=self.key(code), default={})
@@ -351,16 +356,24 @@ class IntegratedResearchService:
             dict(category='disclosures', status=disclosure['status'], count=len(events), **text_coverage,
                  source='cninfo', errors=disclosure.get('errors', [])),
             dict(category='news', status=news['status'], count=len(news['facts']), limitations=news.get('limitations', []))]
+        if distributions is not None:
+            coverage.append(dict(category='distributions',status=distributions['status'],count=len(distributions['items']),errors=distributions['errors']))
         with market._publication(task):
             if task['profile'] != self.profile or source_signature(settings) != source_signature(svc.settings):
                 return
             svc.repo.append(self.profile, 'research_data', self.key(code), dict(facts=facts, events=events, coverage=coverage,
-                source_signature=list(source_signature(settings)),valuation_history=valuation['history'],fetched_at=now))
+                source_signature=list(source_signature(settings)),valuation_history=valuation['history'],
+                value_facts=financial.get('value_facts', []),distributions=distributions['items'] if distributions is not None else previous.get('distributions', []),fetched_at=now))
             industry = self._industry(code)
             if industry:
                 svc.repo.append(self.profile, 'industry_archive', self.key(code), dict(sector_id=industry['sector_id'], observed_at=now))
+            if hasattr(svc, 'value'):
+                svc.value.capture(code)
+                if payload.get('root_code') and payload['root_code'] != code:
+                    svc.value.capture(payload['root_code'])
             try:
-                self.freeze(code, facts, events, coverage)
+                if not payload.get('value_only'):
+                    self.freeze(code, facts, events, coverage)
             except EvidenceNotReady:
                 # Data survives while price jobs catch up; GET does not perform that work.
                 market.repo.set_state(self.profile, 'research_waiting:' + code, dict(reason='等待完整同源历史', fetched_at=now))
@@ -370,7 +383,7 @@ class IntegratedResearchService:
             identities=[]
             for peer in peers:
                 identity = self.jobs.submit(self.profile, f'research-peer:{peer}:{now[:10]}:{configuration_stamp(settings)}',
-                    'research_data', dict(code=peer, root_code=code, settings=settings.model_dump(), include_peers=False), 95)
+                    'research_data', dict(code=peer, root_code=code, settings=settings.model_dump(), include_peers=False, value_only=bool(payload.get('value_only'))), 65 if payload.get('value_only') else 95)
                 identities.append(identity)
             with market._publication(task):
                 state=market.repo.get_state(self.profile,'research_peers:'+code,{})

@@ -111,3 +111,7 @@ def resume():
 def paused(s,value):
     s.market.repo.pause(s.settings.mode,value)
     return s.market.repo.progress(s.settings.mode)
+
+
+from api.v1.endpoints.a_share_value import router as value_router
+router.include_router(value_router)

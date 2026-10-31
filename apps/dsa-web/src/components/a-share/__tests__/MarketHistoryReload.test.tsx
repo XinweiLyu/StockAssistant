@@ -4,7 +4,7 @@ import { useMarketHistory } from '../useMarketHistory';
 import { useQuantOutlook } from '../useQuantOutlook';
 import { aShareMarketApi } from '../../../api/aShareMarket';
 import { outlookHistory,outlookFixture } from './outlookFixture';
-vi.mock('../../../api/aShareMarket',()=>({aShareMarketApi:{history:vi.fn(),outlook:vi.fn()}}));
+vi.mock('../../../api/aShareMarket',()=>({aShareMarketApi:{getValue:vi.fn(async(code:string)=>({code,status:"missing"})),history:vi.fn(),outlook:vi.fn()}}));
 beforeEach(()=>{vi.resetAllMocks();vi.mocked(aShareMarketApi.history).mockImplementation(async(code,_start,_end,adjust)=>outlookHistory(adjust,code));vi.mocked(aShareMarketApi.outlook).mockImplementation(async code=>outlookFixture(code));});
 it('separates history read-only reload from explicit retry and never carries refresh to another key',async()=>{
   const {result,rerender}=renderHook(({code,adjust})=>useMarketHistory(code,'2026-01-01','2026-10-14',adjust),{initialProps:{code:'600000',adjust:'qfq' as 'raw'|'qfq'}});

@@ -88,7 +88,7 @@ def manager_context(output,max_bytes=600):
     return summaries
 
 
-def completion_params(model):
+def completion_params(model, purpose=None):
     """Honor deployment reasoning/output settings while keeping one paid attempt."""
     from math import isfinite
     from src.config import get_config, get_api_keys_for_model, extra_litellm_params
@@ -106,8 +106,8 @@ def completion_params(model):
     if params.get('max_completion_tokens') is not None:
         params.pop('max_tokens',None)
     else:
-        params.setdefault('max_tokens',800)
-    timeout=float(params.get('timeout',35))
+        params.setdefault('max_tokens',8192 if purpose == 'value' else 800)
+    timeout=float(params.get('timeout',300 if purpose == 'value' else 35))
     if not isfinite(timeout) or not 5<=timeout<=3600:
         raise ValueError('研究模型 timeout 必须在5至3600秒之间')
     params.update(timeout=timeout,num_retries=0)
@@ -151,8 +151,8 @@ class ResearchEngine:
         return run_integrated(self,bundle,settings,day,manual,progress,force)
 
     @staticmethod
-    def _complete(messages,model):
-        params=completion_params(model)
+    def _complete(messages,model,purpose=None):
+        params=completion_params(model,purpose=purpose)
         result=subprocess.run([sys.executable,'-m','src.services.a_share_research','--completion'],
                               input=json.dumps(dict(messages=messages,params=params)),capture_output=True,
                               text=True,check=True,timeout=params['timeout']+10)

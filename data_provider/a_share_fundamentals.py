@@ -151,7 +151,7 @@ class ResearchSources:
         raise ValueError('财务分页超过有界上限')
 
     def financials(self, code, observed_at):
-        errors, facts = [], []
+        errors, facts, value_facts = [], [], []
         suffix = '.SH' if code.startswith('6') else '.SZ' if code.startswith(('0', '3')) else '.BJ'
         paid = self.settings.mode.startswith('tushare')
         endpoints = [('fina_indicator', 'income', 'cashflow', 'balancesheet')] if paid else []
@@ -159,7 +159,7 @@ class ResearchSources:
             endpoints += [('stock_financial_analysis_indicator_em', 'stock_profit_sheet_by_report_em',
                            'stock_cash_flow_sheet_by_report_em', 'stock_balance_sheet_by_report_em')]
         for group in endpoints:
-            group_facts = []
+            group_facts, group_values = [], []
             for name in group:
                 is_paid = not name.startswith('stock_')
                 params = dict(ts_code=code + suffix, start_date='20000101') if is_paid else (
@@ -167,14 +167,58 @@ class ResearchSources:
                     else dict(symbol=suffix[1:] + code))
                 try:
                     rows = self._paid_rows(name, params) if is_paid else self.provider.call(name, params)
-                    group_facts += normalize_financials(code, rows, ('tushare/' if is_paid else 'eastmoney/') + name, observed_at)
+                    source = ('tushare/' if is_paid else 'eastmoney/') + name
+                    group_facts += normalize_financials(code, rows, source, observed_at)
+                    from data_provider.a_share_value_facts import normalize_value_statements
+                    group_values += normalize_value_statements(code, rows, source, observed_at)
                 except (ValueError, RuntimeError, KeyError, TypeError) as exc:
                     errors.append(dict(source=name, error=type(exc).__name__))
             if group_facts:
-                facts = group_facts
+                facts, value_facts = group_facts, group_values
                 break
-        return dict(status='partial' if facts and errors else 'ready' if facts else 'failed', facts=facts,
+        return dict(status='partial' if facts and errors else 'ready' if facts else 'failed', facts=facts, value_facts=value_facts,
                     errors=errors, limitations=['最新修订财报不能当作过去当时已知版本；未获取字段保留缺失'])
+
+    def capital(self, code, observed_at):
+        from data_provider.a_share_value_facts import normalize_current_capital, normalize_daily_capital
+        if self.settings.mode.startswith('tushare'):
+            try:
+                suffix = '.SH' if code.startswith('6') else '.SZ' if code.startswith(('0', '3')) else '.BJ'
+                day = date.fromisoformat(stamp(observed_at)[:10])
+                rows = self.provider.call('daily_basic', dict(ts_code=code+suffix,
+                    start_date=(day-timedelta(days=20)).strftime('%Y%m%d'), end_date=day.strftime('%Y%m%d'),
+                    fields='ts_code,trade_date,total_share'), tushare=True)
+                facts = normalize_daily_capital(code, rows, observed_at)
+                if facts:
+                    return dict(facts=facts, status='ready')
+            except (ValueError, RuntimeError, KeyError, TypeError):
+                pass
+            if not self.settings.free_fallback:
+                return dict(facts=[], status='missing', reason='付费股本接口未取得资料，未越权调用免费回退')
+        try:
+            rows = self.provider.call('stock_individual_info_em', dict(symbol=code, timeout=15))
+            facts = normalize_current_capital(code, rows, observed_at)
+            return dict(facts=facts, status='ready' if facts else 'missing')
+        except (ValueError, RuntimeError, KeyError, TypeError):
+            return dict(facts=[], status='failed', reason='当前总股本未核实，未使用流通股或注册资本替代')
+
+    def distributions(self, code, observed_at):
+        from data_provider.a_share_value_facts import normalize_distributions
+        errors=[]
+        names=['dividend'] if self.settings.mode.startswith('tushare') else []
+        if not names or self.settings.free_fallback:
+            names.append('stock_fhps_detail_em')
+        for name in names:
+            paid=name=='dividend'
+            suffix='.SH' if code.startswith('6') else '.SZ' if code.startswith(('0','3')) else '.BJ'
+            try:
+                rows=self.provider.call(name,dict(ts_code=code+suffix) if paid else dict(symbol=code),tushare=paid)
+                items=normalize_distributions(code,rows,('tushare/' if paid else 'eastmoney/')+name,observed_at)
+                if items:
+                    return dict(status='ready',items=items,errors=errors)
+            except (ValueError,RuntimeError,KeyError,TypeError) as exc:
+                errors.append(type(exc).__name__)
+        return dict(status='missing',items=[],errors=errors)
 
     def disclosures(self, code, start, end, observed_at):
         errors = []

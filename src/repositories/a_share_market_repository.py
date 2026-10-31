@@ -32,6 +32,9 @@ TASKS=table('tasks',Column('id',String(40),primary_key=True),Column('profile',St
             Column('priority',Integer),Column('payload',Text),Column('attempts',Integer),Column('claim_version',Integer),
             Column('created_at',String(40)),Column('updated_at',String(40)),Column('next_attempt',String(40)),Column('error',Text),
             UniqueConstraint('profile','key',name='uq_market_task_request'))
+VALUE_ATTEMPTS=table('value_attempts',Column('task_id',String(40),primary_key=True),
+    Column('profile',String(32),nullable=False),Column('claim_version',Integer,nullable=False),
+    Column('snapshot_id',String(80),nullable=False),Column('created_at',String(40),nullable=False))
 
 
 def jsonable(value):
@@ -49,7 +52,7 @@ def stamp(now=None):
 class MarketRepository:
     def __init__(self,engine):
         self.engine=engine
-        Base.metadata.create_all(engine,tables=[CATALOG,QUOTES,SECTORS,MEMBERS,RANGES,BARS,STATE,TASKS])
+        Base.metadata.create_all(engine,tables=[CATALOG,QUOTES,SECTORS,MEMBERS,RANGES,BARS,STATE,TASKS,VALUE_ATTEMPTS])
 
     @staticmethod
     def _upsert(conn, tbl, values):
@@ -229,6 +232,25 @@ class MarketRepository:
             identity=conn.execute(select(TASKS.c.id).where(TASKS.c.profile==profile,TASKS.c.key==key)).scalar_one()
         return identity
 
+    def enqueue_value_research(self,profile,fingerprint,payload,force=False):
+        prefix='value-ai:'+fingerprint+':'
+        with self.engine.connect() as conn:
+            conn.exec_driver_sql('BEGIN IMMEDIATE')
+            rows=conn.execute(select(TASKS).where(TASKS.c.profile==profile,TASKS.c.kind=='value_research',
+                TASKS.c.key.like(prefix+'%')).order_by(TASKS.c.created_at.desc(),TASKS.c.id.desc())).mappings().all()
+            active=next((r for r in rows if r['state'] in ('pending','running')),None)
+            previous=active or (rows[0] if rows and not force else None)
+            if previous:
+                conn.commit()
+                return dict(task_id=previous['id'],accepted=False,status=previous['state'],cached=not bool(active))
+            identity=uuid.uuid4().hex
+            now=stamp()
+            conn.execute(insert(TASKS).values(id=identity,profile=profile,key=prefix+str(len(rows)+1),kind='value_research',
+                state='pending',priority=25,payload=encode(payload),attempts=0,claim_version=0,
+                created_at=now,updated_at=now,next_attempt=None,error=None))
+            conn.commit()
+            return dict(task_id=identity,accepted=True,status='pending',cached=False)
+
     def claim(self,profile,now,kinds=None,exclude_kinds=None):
         paused=self.get_state(profile,'paused',False)
         with self.engine.begin() as conn:
@@ -249,6 +271,32 @@ class MarketRepository:
             if not changed.rowcount:
                 return None
             return dict(row)|dict(payload=json.loads(row['payload']),attempts=row['attempts']+1,claim_version=version)
+
+    def begin_value_attempt(self,task,snapshot_id):
+        """Exactly one durable paid-attempt claim, including cross-process recovery."""
+        from src.repositories.a_share_repository import JOURNAL, AssistantRepository
+        with self.engine.connect() as conn:
+            conn.exec_driver_sql('BEGIN IMMEDIATE')
+            owner=conn.execute(select(TASKS.c.id).where(TASKS.c.id==task['id'],TASKS.c.profile==task['profile'],
+                TASKS.c.kind=='value_research',TASKS.c.state=='running',TASKS.c.claim_version==task['claim_version'])).scalar()
+            if not owner:
+                conn.rollback()
+                return 'claim_lost'
+            # Preserve receipts from the first schema version as well.
+            legacy=conn.execute(select(JOURNAL.c.id).where(JOURNAL.c.mode==AssistantRepository.namespace(task['profile']),
+                JOURNAL.c.kind=='value_attempt',JOURNAL.c.key==task['id']).limit(1)).scalar()
+            if legacy:
+                conn.commit()
+                return 'attempted'
+            inserted=conn.execute(insert(VALUE_ATTEMPTS).values(task_id=task['id'],profile=task['profile'],
+                claim_version=task['claim_version'],snapshot_id=snapshot_id,created_at=stamp()).on_conflict_do_nothing(index_elements=['task_id']))
+            if not inserted.rowcount:
+                conn.commit()
+                return 'attempted'
+            conn.execute(JOURNAL.insert().values(mode=AssistantRepository.namespace(task['profile']),kind='value_attempt',
+                key=task['id'],created_at=stamp(),payload=encode(dict(started=True,snapshot_id=snapshot_id,claim_version=task['claim_version']))))
+            conn.commit()
+            return 'claimed'
 
     def finish(self,task_id,claim_version,state,error=None,next_attempt=None):
         with self.engine.begin() as conn:
