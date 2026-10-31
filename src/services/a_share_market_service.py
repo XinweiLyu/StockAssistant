@@ -220,13 +220,30 @@ class MarketService:
         return dict(items=items,classification=query.classification or ('demo-'+query.kind if self.profile=='demo' else 'eastmoney-'+query.kind),
                     period=query.period,coverage=self.coverage(),demo=self.profile=='demo')
 
-    def members(self,sector_id,query):
+    def members(self,sector_id,query,refresh=False):
         sector=self.repo.sector(self.profile,sector_id)
         if not sector:
             raise ValueError('当前分类没有该板块')
         membership=self.repo.members(self.profile,sector_id)
-        if not membership['version']:
-            self._submit('members','members:'+sector_id+':'+self.clock().astimezone(TZ).date().isoformat(),10,sector=sector)
+        task=None
+        stamp=membership.get('fetched_at')
+        try:
+            stale=not stamp or (self.clock()-datetime.fromisoformat(stamp)).total_seconds()>=86400
+        except (ValueError,TypeError):
+            stale=True
+        generation=self.clock().astimezone(TZ).date().isoformat()+':'+configuration_stamp(self.assistant.settings)
+        if self.profile!='demo' and (not membership['version'] or stale or refresh):
+            task=self.repo.ensure_members_task(self.profile,sector_id,generation,self._payload(sector=sector),refresh)
+        else:
+            pointer=self.repo.get_state(self.profile,'members-task:'+sector_id,{})
+            task=self.repo.task(pointer.get('id')) if pointer.get('generation')==generation else None
+        if task:
+            self.repo.set_state(self.profile,'members-task:'+sector_id,dict(id=task['id'],generation=generation))
+            error=task.get('error') or ('成分股获取失败，请重试' if task['state']=='failed' else None)
+            membership.update(task_id=task['id'],error=error,retry_at=task.get('next_attempt'),
+                refreshing=task['state'] in ('pending','running') and not error)
+            if not membership['version']:
+                membership['state']='failed' if error else 'pending'
         field='industry_id' if sector['kind']=='industry' else 'concept_id'
         result=self.catalog(query.model_copy(update={field:sector_id}))
         return result|dict(sector=sector,membership=membership)
@@ -399,7 +416,7 @@ class MarketService:
             elif kind=='members':
                 sector=payload['sector']
                 codes=provider.members(sector)
-                with self._publication(task): self.repo.replace_members(profile,sector['sector_id'],self.clock().isoformat(),codes)
+                with self._publication(task): self.repo.replace_members(profile,sector['sector_id'],self.clock().isoformat(),codes,source=getattr(provider,'members_source',None))
             elif kind=='benchmark':
                 end=payload.get('end') or self.completed_day(profile)
                 start=payload.get('start') or (date.fromisoformat(end)-timedelta(days=500)).isoformat()

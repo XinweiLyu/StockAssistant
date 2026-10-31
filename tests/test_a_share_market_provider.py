@@ -97,3 +97,20 @@ def test_inconsistent_turnover_units_are_withheld_instead_of_wrong_share_count()
     row=normalize_history([dict(date='2026-10-14',open=26.3,high=26.8,low=26.06,close=26.27,
                                 volume=354489,amount=938670600)],'akshare/tencent')[0]
     assert row.volume is None and row.amount is None
+
+
+def test_members_fall_back_to_same_board_f10_without_changing_classification():
+    from data_provider.a_share_market import MarketProvider
+    class Public:
+        def call(self, name, params=None, **kwargs):
+            if name == 'stock_board_concept_cons_em':
+                raise RuntimeError('push2 unavailable')
+            assert name == 'stock_board_members_f10_em'
+            assert params == {'symbol': 'BK0800'}
+            return [{'SECURITY_CODE': '000001', 'BOARD_CODE': '800'},
+                    {'SECURITY_CODE': '600001', 'BOARD_CODE': '800'}]
+    provider = MarketProvider(Public(), AssistantSettings(mode='free'))
+    sector = dict(source='akshare/eastmoney', kind='concept', code='BK0800')
+    assert provider.members(sector) == ['000001', '600001']
+    assert provider.members_source == 'eastmoney/F10'
+    assert sector['source'] == 'akshare/eastmoney'

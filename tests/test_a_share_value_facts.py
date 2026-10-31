@@ -81,3 +81,30 @@ def test_paid_capital_uses_daily_basic_units_and_honors_no_free_fallback():
     assert calls==[('daily_basic',True)]
     assert result['facts'][0]['value']==425000
     assert result['facts'][0]['period_end']=='2026-10-29'
+
+
+def test_valuation_capital_keeps_total_shares_and_actual_valuation_date():
+    from data_provider.a_share_value_facts import normalize_valuation_capital
+    rows=[{'SECURITY_CODE':'605499','数据日期':'2026-10-30','总股本':734199310,'流通股本':676016900},
+          {'SECURITY_CODE':'605499','数据日期':'2026-10-29','总股本':734199310}]
+    f=normalize_valuation_capital('605499',rows,'eastmoney/stock_value_em','2026-10-31T14:43:00+08:00')[0]
+    assert f['value']==734199310 and f['unit']=='shares'
+    assert f['report_period']=='2026-10-30'
+    assert f['metric']=='current_shares'
+    assert f['source']=='eastmoney/stock_value_em'
+    assert f['available_at'].startswith('2026-10-31')
+    with pytest.raises(ValueError):
+        normalize_valuation_capital('600519',rows,'eastmoney/stock_value_em','2026-10-31T14:43:00+08:00')
+    assert normalize_valuation_capital('605499',[{'数据日期':'2026-10-30','总股本':None},rows[1]],'eastmoney/stock_value_em','2026-10-31T14:43:00+08:00')==[]
+
+
+def test_free_valuation_preserves_capital_for_same_download_fallback():
+    from data_provider.a_share_fundamentals import ResearchSources
+    from src.schemas.a_share import AssistantSettings
+    class Public:
+        def call(self,name,params=None,**kwargs):
+            assert name=='stock_value_em' and params['symbol']=='605499'
+            return [{'数据日期':'2026-10-30','总股本':734199310,'当日收盘价':108,'PE(TTM)':20,'市净率':3}]
+    result=ResearchSources(Public(),AssistantSettings(mode='free')).valuation('605499','2026-10-31T14:43:00+08:00')
+    assert result['value_facts'][0]['value']==734199310
+    assert result['value_facts'][0]['metric']=='current_shares'

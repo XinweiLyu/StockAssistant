@@ -94,3 +94,27 @@ def test_value_call_has_structured_output_budget_without_capping_configured_reas
     params=completion_params('mock',purpose='value')
     assert params['max_completion_tokens']==131072 and params['timeout']==1800
     assert 'max_tokens' not in params
+
+
+def test_delivery_keeps_quote_dividends_capital_notes_and_older_annuals_when_events_flood_snapshot(tmp_path):
+    import json
+    from data_provider.a_share_value_facts import normalize_value_statements
+    svc=value_service(tmp_path);s=svc.value.capture('600034');now=s['cutoff']
+    for year in range(2017,2026):
+        s['facts']+=normalize_value_statements('600034',[dict(ts_code='600034.SH',end_date=f'{year}1231',ann_date='20260330',report_type='1',total_revenue=100+year,n_income_attr_p=20)],'tushare/income',now)
+    s['evidence']=[dict(id=f['fact_id'],source=f['source'],content=json.dumps(f)) for f in s['facts']]
+    s['evidence'].append(dict(id='QUOTE',source='eastmoney/stock_value_em',content=json.dumps(dict(values=dict(close=108,pe_ttm=16.5,trade_date='2026-10-30')))))
+    s['evidence'].append(dict(id='DIVIDEND',source='eastmoney/stock_fhps_detail_em',content=json.dumps(dict(report_period='2025-12-31',cash_per_share=2.5,status='implemented'))))
+    s['events']=[dict(id=f'E{i}',title='董事会决议公告',published_at='2026-10-29',text_status='missing',text='') for i in range(900)]
+    text='财报标题\n'+'无关正文\n'*2000+'公司在香港联交所发行H股，募集资金增加货币资金；总股本为734199310股。'+'\n其他内容'*100
+    s['events'].insert(0,dict(id='REPORT',title='2026年第三季度报告',kind='earnings',published_at='2026-10-30',text_status='ready',text=text))
+    s['evidence'] += [dict(id=e['id'],source='cninfo',content=json.dumps(e,ensure_ascii=False)[:6000]) for e in s['events']]
+    delivered={}
+    def completion(messages,model):
+        assert len(json.dumps(messages,ensure_ascii=False).encode())<=48000
+        delivered.update({e['id']:e for e in json.loads(messages[1]['content'])['evidence']})
+        return dict(perspectives=[],proposed_assumptions=None,missing=[])
+    result=ValueResearchEngine(svc.repo,completion).run(s,svc.settings.model_copy(update={'model':'mock'}),lambda p:None)
+    assert {'QUOTE','DIVIDEND','REPORT'} <= delivered.keys()
+    assert '734199310' in json.dumps(delivered['REPORT'],ensure_ascii=False)
+    assert any(f['report_period']=='2021-12-31' and f['fact_id'] in result['sent_ids'] for f in s['facts'])

@@ -21,6 +21,7 @@ ALLOWED = {'stock_zh_a_spot_em','stock_zh_a_hist','stock_individual_info_em',
            'stock_zh_index_daily_em','stock_zh_a_spot_tx','stock_zh_a_spot',
            'stock_zh_a_daily','stock_zh_a_hist_tx','stock_info_sh_name_code','stock_info_sz_name_code'}
 ALLOWED |= {'stock_info_a_code_name','stock_info_bj_name_code','stock_board_industry_cons_em',
+            'stock_board_members_f10_em',
             'stock_board_concept_name_em','stock_board_concept_cons_em','stock_board_concept_hist_em',
             'stock_board_industry_name_ths','stock_board_industry_index_ths',
             'stock_board_concept_name_ths','stock_board_concept_index_ths'}
@@ -153,7 +154,8 @@ class CapabilityProvider:
                 except (ValueError,TypeError):
                     pass
             message=message.replace(self.token,'[redacted]') if self.token else message
-            cooldown_key=request_key if error_type in ('KeyError','IndexError','TypeError') else key
+            cooldown_key=request_key if (error_type in ('KeyError','IndexError','TypeError') or
+                                        (name=='stock_board_members_f10_em' and error_type=='ValueError')) else key
             self.failures[cooldown_key]=(time.monotonic()+900,message[:300])
             raise RuntimeError(message[:300]) from None
 
@@ -176,6 +178,10 @@ if __name__=='__main__' and '--request' in sys.argv:
             print(json.dumps([dict(zip(data['fields'],r)) for r in data['items']],ensure_ascii=False))
             sys.exit(0)
         else:
+            if request['name']=='stock_board_members_f10_em':
+                from a_share_sector_members import fetch_members
+                print(json.dumps(fetch_members(**request['params']),ensure_ascii=False))
+                sys.exit(0)
             import akshare as ak
             if request['name'] not in ALLOWED:
                 raise ValueError('接口不在允许列表')

@@ -126,6 +126,36 @@ def normalize_daily_capital(code, rows, observed_at):
     return [ValueFact(**payload, content_hash=content, fact_id='VC'+content[:20]).model_dump()]
 
 
+def normalize_valuation_capital(code, rows, source, observed_at):
+    """Retain issued shares from the valuation download, dated to its actual session."""
+    if source == 'tushare/daily_basic':
+        return normalize_daily_capital(code, rows, observed_at)
+    if source != 'eastmoney/stock_value_em':
+        raise ValueError('估值股本来源尚未核实')
+    observed = stamp(observed_at)
+    dated = []
+    for row in rows:
+        # AKShare binds the request symbol and drops SECURITY_CODE from its frame.
+        if str(row.get('SECURITY_CODE', code)).zfill(6) != code:
+            raise ValueError('估值股本证券不匹配')
+        day = stamp(row.get('数据日期'))
+        if day and day[:10] <= observed[:10]:
+            dated.append((day[:10], row.get('总股本')))
+    if not dated:
+        return []
+    day = max(d for d, _ in dated)
+    values = [v for d, v in dated if d == day]
+    if (any(isinstance(v, bool) or not isinstance(v, (int, float)) or not isfinite(v) or v <= 0 for v in values)
+            or len(set(values)) != 1):
+        return []
+    payload = dict(code=code, metric='current_shares', value=values[0], unit='shares',
+        report_period=day, period_end=day, period_basis='instant', scope='consolidated', attribution='parent_common',
+        source=source, raw_field='总股本/TOTAL_SHARES', observed_at=observed, available_at=observed,
+        url='https://data.eastmoney.com/gzfx/detail/'+code+'.html')
+    content = digest(payload)
+    return [ValueFact(**payload, content_hash=content, fact_id='VC'+content[:20]).model_dump()]
+
+
 def normalize_distributions(code, rows, source, observed_at):
     """Retain announced actions, never confuse ex-date with cash payment date."""
     import re
@@ -153,7 +183,7 @@ def normalize_distributions(code, rows, source, observed_at):
         cash=numeric(row.get('cash_div_tax')) if paid else None
         if not paid:
             # Use an explicit contract in the text instead of guessing ratio units.
-            match=re.search(r'(\d+(?:\.\d+)?)\s*(?:股)?\s*派\s*(\d+(?:\.\d+)?)',description)
+            match=re.search(r'(\d+(?:\.\d+)?)\s*(?:股)?\s*(?:(?:送|转(?:增)?)\s*\d+(?:\.\d+)?\s*(?:股)?\s*)*派\s*(\d+(?:\.\d+)?)',description)
             if match and float(match[1])>0 and '含税' in description:
                 cash=float(match[2])/float(match[1])
         stage=str(row.get('div_proc') if paid else row.get('方案进度'))

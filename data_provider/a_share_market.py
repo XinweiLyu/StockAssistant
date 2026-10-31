@@ -164,8 +164,20 @@ class MarketProvider:
         sector=sector.model_dump() if hasattr(sector,'model_dump') else sector
         if sector['source']!='akshare/eastmoney':
             raise ValueError('此来源成分接口尚未核实')
-        rows=self.provider.call('stock_board_'+sector['kind']+'_cons_em',{'symbol':sector['code']})
-        return sorted({code_of(r['代码']) for r in rows})
+        if sector['kind'] not in ('industry','concept'):
+            raise ValueError('板块分类无效')
+        try:
+            rows=self.provider.call('stock_board_'+sector['kind']+'_cons_em',{'symbol':sector['code']})
+            codes=sorted({code_of(r['代码']) for r in rows})
+            if not codes: raise ValueError('成分股为空')
+            self.members_source='akshare/eastmoney'
+            return codes
+        except (RuntimeError,ValueError,KeyError,TypeError):
+            rows=self.provider.call('stock_board_members_f10_em',{'symbol':sector['code']})
+            if not rows or any(str(r.get('BOARD_CODE'))!=str(int(sector['code'][2:])) for r in rows):
+                raise ValueError('F10成分股为空或板块不匹配')
+            self.members_source='eastmoney/F10'
+            return sorted({code_of(r['SECURITY_CODE']) for r in rows})
 
     def history(self,code,start,end,adjust,source=None):
         source=source or ('tushare' if self.settings.mode.startswith('tushare') else 'akshare/eastmoney')

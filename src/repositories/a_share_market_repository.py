@@ -121,14 +121,14 @@ class MarketRepository:
         with self.engine.connect() as conn:
             return [json.loads(r[0]) for r in conn.execute(statement)]
 
-    def replace_members(self,profile,sector_id,version,codes):
+    def replace_members(self,profile,sector_id,version,codes,source=None):
         codes=sorted(set(codes))
         if not codes:
             raise ValueError('成分股为空，保留上一版')
         with self.engine.begin() as conn:
             conn.execute(delete(MEMBERS).where(MEMBERS.c.profile==profile,MEMBERS.c.sector_id==sector_id,MEMBERS.c.version==version))
             conn.execute(MEMBERS.insert(),[dict(profile=profile,sector_id=sector_id,version=version,code=c) for c in codes])
-            self.set_state(profile,'members:'+sector_id,dict(version=version,fetched_at=stamp()),conn)
+            self.set_state(profile,'members:'+sector_id,dict(version=version,fetched_at=stamp(),source=source),conn)
 
     def members(self,profile,sector_id,version=None):
         current=self.get_state(profile,'members:'+sector_id,{})
@@ -137,7 +137,30 @@ class MarketRepository:
             return dict(codes=[],version=None,fetched_at=None,state='pending')
         with self.engine.connect() as conn:
             codes=list(conn.execute(select(MEMBERS.c.code).where(MEMBERS.c.profile==profile,MEMBERS.c.sector_id==sector_id,MEMBERS.c.version==chosen).order_by(MEMBERS.c.code)).scalars())
-        return dict(codes=codes,version=chosen,fetched_at=current.get('fetched_at'),state='ready')
+        return dict(codes=codes,version=chosen,fetched_at=current.get('fetched_at'),source=current.get('source'),state='ready')
+
+    def ensure_members_task(self,profile,sector_id,generation,payload,refresh=False):
+        # Serialize selection/retry across simultaneous sidebar and board requests.
+        prefix='members-request:'+sector_id+':'+generation+':'
+        with self.engine.connect() as conn:
+            conn.exec_driver_sql('BEGIN IMMEDIATE')
+            row=conn.execute(select(TASKS).where(TASKS.c.profile==profile,TASKS.c.kind=='members',
+                TASKS.c.key>=prefix,TASKS.c.key<prefix+'\uffff').order_by(TASKS.c.created_at.desc(),TASKS.c.id.desc())).mappings().first()
+            if row and (row['state'] in ('pending','running') or not refresh):
+                if row['state']=='pending':
+                    values=dict(priority=10)
+                    if refresh and row['error']:
+                        values.update(next_attempt=None,error=None,attempts=0,updated_at=stamp())
+                    conn.execute(update(TASKS).where(TASKS.c.id==row['id']).values(**values))
+                identity=row['id']
+            else:
+                identity=uuid.uuid4().hex
+                now=stamp()
+                conn.execute(TASKS.insert().values(id=identity,profile=profile,key=prefix+identity,kind='members',
+                    state='pending',priority=10,payload=encode(payload),attempts=0,claim_version=0,
+                    created_at=now,updated_at=now,next_attempt=None,error=None))
+            conn.commit()
+        return self.task(identity)
 
     def stock(self,profile,code):
         with self.engine.connect() as conn:

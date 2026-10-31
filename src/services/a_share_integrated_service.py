@@ -335,16 +335,53 @@ class IntegratedResearchService:
                 market.history(code, start, end, adjust)
         source = ResearchSources(svc._provider(), settings)
         financial = source.financials(code, now)
+        capital = None
         distributions = source.distributions(code, now) if payload.get('value_only') and payload.get('include_peers') else None
         if payload.get('value_only') and payload.get('include_peers'):
             capital = source.capital(code, now)
             financial['value_facts'] = financial.get('value_facts', [])+capital['facts']
         valuation = source.valuation(code, now)
+        if capital is not None and not capital['facts'] and valuation.get('value_facts'):
+            capital = dict(facts=valuation['value_facts'], status='ready',
+                limitations=['个股资料股本未取得；使用最近估值日总股本，保留实际日期，不替代为核对日'])
+            financial['value_facts'] = financial.get('value_facts', [])+capital['facts']
         disclosure = source.disclosures(code, start, now[:10], now)
         previous = svc.repo.latest(self.profile, 'research_data', key=self.key(code), default={})
         if previous.get('source_signature') != list(source_signature(settings)):
             previous = {}
-        events, text_coverage = prepare_disclosure_batch(disclosure['events'], previous.get('events', []),
+        disclosure_events = disclosure['events']
+        cached_disclosures = {}
+        archives=[r['payload'] for r in svc.repo.records(self.profile,'research_data',key=self.key(code),limit=100)
+            if r['payload'].get('source_signature')==list(source_signature(settings))]
+        def known_event(e):
+            return (e.get('code')==code and start<=(e.get('published_at') or '')[:10]<=now[:10]
+                and (e.get('available_at') or now)<=now)
+        if disclosure['status']=='failed' and not disclosure_events:
+            for archive in archives:
+                old_coverage=next((c for c in archive.get('coverage',[]) if c.get('category')=='disclosures'),{})
+                saved=[e for e in archive.get('events',[]) if known_event(e)]
+                if saved:
+                    disclosure_events=saved
+                    cached_disclosures=dict(cached=True,cached_at=old_coverage.get('cached_at') or archive.get('fetched_at'),
+                        limitations=['本次公告接口失败；沿用同一来源的已保存公告，时间不更新，不能据此确认没有新公告'])
+                    break
+                if old_coverage.get('status') in ('ready','missing') and not old_coverage.get('errors'):
+                    # An authoritative empty response supersedes older metadata.
+                    break
+        # Current metadata is authoritative. Restore text only for its exact
+        # identities, including originals omitted from the newest saved batch.
+        identity=lambda e:(e['id'],e.get('url'),e.get('published_at'))
+        wanted={identity(e) for e in disclosure_events}
+        saved_text={}
+        for archive in archives:
+            for e in archive.get('events',[]):
+                key=identity(e)
+                if key not in wanted or not known_event(e): continue
+                prior=saved_text.get(key)
+                if prior is None or (not (prior.get('text_status')=='ready' and prior.get('text'))
+                    and e.get('text_status')=='ready' and e.get('text')):
+                    saved_text[key]=e
+        events, text_coverage = prepare_disclosure_batch(disclosure_events, list(saved_text.values()),
             now, market.calendar(), end, fetch_disclosure_text)
         stock = market.stock(code)
         news = source.news(code, stock['name'], stock.get('industries', []), now) if payload.get('include_peers') else dict(status='missing', facts=[])
@@ -353,11 +390,14 @@ class IntegratedResearchService:
         facts = [old_facts.get(f['fact_id'], f) for f in facts]
         coverage = [dict(category='financial', status=financial['status'], count=len(financial['facts']), sources=sorted({f['source'] for f in financial['facts']}), errors=financial.get('errors', [])),
             dict(category='valuation', status=valuation['status'], count=len(valuation['history']), sources=sorted({f['source'] for f in valuation['facts']})),
-            dict(category='disclosures', status=disclosure['status'], count=len(events), **text_coverage,
+            dict(category='disclosures', status='partial' if cached_disclosures else disclosure['status'], count=len(events), **text_coverage, **cached_disclosures,
                  source='cninfo', errors=disclosure.get('errors', [])),
             dict(category='news', status=news['status'], count=len(news['facts']), limitations=news.get('limitations', []))]
         if distributions is not None:
             coverage.append(dict(category='distributions',status=distributions['status'],count=len(distributions['items']),errors=distributions['errors']))
+        if capital is not None:
+            coverage.append(dict(category='capital',status=capital['status'],count=len(capital['facts']),
+                sources=sorted({f['source'] for f in capital['facts']}),reason=capital.get('reason'),limitations=capital.get('limitations',[])))
         with market._publication(task):
             if task['profile'] != self.profile or source_signature(settings) != source_signature(svc.settings):
                 return

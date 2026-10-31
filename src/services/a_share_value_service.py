@@ -69,7 +69,8 @@ class ValueResearchService:
             configuration=configuration_stamp(self.assistant.settings), eligibility=self._eligibility(stock),
             industry=industry, facts_hash=digest(data.get('value_facts', [])),
             historical_context_hash=digest([data.get('valuation_history', []),data.get('distributions', []),self._case_library(stock['code'],self.now())]),
-            evidence_hash=digest([data.get('facts', []), data.get('events', [])]))
+            evidence_hash=digest([data.get('facts', []), data.get('events', [])]),
+            disclosure_coverage_hash=digest([c for c in data.get('coverage',[]) if c.get('category')=='disclosures']))
 
     def _peer_row(self, stock, data, model, view, industry):
         # Membership in the target board is a candidate relation, never a
@@ -146,6 +147,9 @@ class ValueResearchService:
         if cases:
             evidence.append(dict(id='VALUE_CASES', source='已保存的可比事件研究', content=json.dumps(cases[:20], ensure_ascii=False)))
         missing = []
+        cached_disclosures=next((c for c in data.get('coverage',[]) if c.get('category')=='disclosures' and c.get('cached')),None)
+        if cached_disclosures:
+            missing.append(f"公告接口本次失败；使用 {cached_disclosures.get('cached_at') or '此前'} 已保存公告，最新披露完整性待核实")
         if not facts:
             missing.append('未取得可核对的三大财务报表；请更新资料或带原文补充')
         if not view.get('current_capital'):
@@ -173,7 +177,7 @@ class ValueResearchService:
         binding = self._binding(stock, self._data(stock['code']))
         reasons = []
         for key, label in [('source_signature', '数据来源配置'), ('eligibility', '证券资格或重大风险'),
-                           ('facts_hash', '财报/股本'), ('industry', '行业归属'), ('historical_context_hash', '历史估值/分配/事件案例'), ('evidence_hash', '研究证据')]:
+                           ('facts_hash', '财报/股本'), ('industry', '行业归属'), ('historical_context_hash', '历史估值/分配/事件案例'), ('evidence_hash', '研究证据'), ('disclosure_coverage_hash','公告覆盖及新鲜度')]:
             if snapshot['binding'].get(key) != binding.get(key):
                 reasons.append(label+'已变化，旧报告仅作历史对照')
         if snapshot['version'] != VERSION:
@@ -224,7 +228,7 @@ class ValueResearchService:
             status = 'preparing'
         if task and task['state'] in ('pending', 'running'):
             status = 'running'
-        elif task and task['state'] == 'failed':
+        elif task and task['state'] == 'failed' and status not in ('preparing','stale'):
             status = 'failed'
         if report:
             report = deepcopy(report)
@@ -249,6 +253,8 @@ class ValueResearchService:
         if review and review.get('status') in ('failed', 'interrupted') and status not in ('preparing', 'running'):
             status = review['status']
         progress = self.assistant.market.repo.get_state(self.profile, 'value_progress:'+code, {})
+        if status == 'ready' and not review and not report:
+            progress = dict(phase='prepared', percent=45, message='资料已准备，尚未调用AI；点击生成价值研究继续', eta_seconds=None)
         if status == 'preparing':
             fraction = peers['complete']/peers['total'] if peers['total'] else 0
             progress = dict(phase='preparing', percent=round(10+fraction*35),

@@ -51,3 +51,24 @@ def test_sector_period_query_strings_are_coerced_and_validated(tmp_path,monkeypa
         response=c.get('/assistant/market/sectors',params={'period':period})
         assert response.status_code==200
     assert c.get('/assistant/market/sectors?period=7').status_code==422
+
+
+def test_members_api_accepts_explicit_refresh_and_exposes_failure(tmp_path,monkeypatch):
+    svc,_=setup_market(tmp_path)
+    sector=dict(sector_id='em:concept:BK0800',kind='concept',classification='eastmoney-concept',
+                name='人工智能',code='BK0800',source='akshare/eastmoney',fetched_at='2026-10-12')
+    svc.market.repo.put_sectors('free',[sector])
+    client=client_for(svc,monkeypatch)
+    url='/assistant/market/sectors/em:concept:BK0800/members'
+    pending=client.get(url).json()
+    assert pending['membership']['state']=='pending'
+    task=svc.market.repo.task(pending['membership']['task_id'])
+    from sqlalchemy import update
+    from src.repositories.a_share_market_repository import TASKS
+    with svc.market.repo.engine.begin() as conn:
+        conn.execute(update(TASKS).where(TASKS.c.id==task['id']).values(state='failed',error='offline'))
+    assert client.get(url).json()['membership']['state']=='failed'
+    retried=client.get(url,params={'refresh':True}).json()
+    assert retried['membership']['state']=='pending'
+    assert retried['membership']['task_id']!=task['id']
+    assert client.get(url,params={'refresh':'invalid'}).status_code==422

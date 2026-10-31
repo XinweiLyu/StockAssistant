@@ -80,3 +80,25 @@ it('removes a deleted watchlist stock immediately after the saved watchlist chan
     expect(screen.getByRole('region',{name:'股票研究详情'})).toBeInTheDocument();
   }finally{cleanup();vi.useRealTimers();}
 });
+
+it('refreshes industry and concept options after first load and keeps the selected filter',async()=>{
+  vi.useFakeTimers();vi.clearAllMocks();
+  try{
+    let expanded=false;
+    const industry={sector_id:'em:industry:BK1586',name:'软饮料',kind:'industry'};
+    const concept={sector_id:'em:concept:BK0800',name:'人工智能',kind:'concept'};
+    vi.mocked(apiClient.get).mockImplementation(async(url,config)=>({data:
+      url?.endsWith('/sectors')?{items:config?.params?.kind==='industry'?[industry,...(expanded?[{...industry,sector_id:'em:industry:BK1283',name:'银行'}]:[])]:[concept]}:
+      url?.endsWith('/members')?{items:[],total:0,page:1,page_size:1,membership:{codes:['000848'],version:'v1',state:'ready'}}:
+      url?.endsWith('/jobs')?{counts:{},paused:false}:{items:[],total:0,page:1,page_size:50}}));
+    const board={settings:{mode:'free',watchlist:[],research_enabled:false},report:null,research:[],events:[],holdings:[]};
+    render(<InvestmentWorkspace board={board as never} selectedCode="" onSelectStock={()=>{}} onWatchlist={()=>{}} onResearch={()=>{}}/>);
+    await act(async()=>{await vi.advanceTimersByTimeAsync(250);});
+    fireEvent.change(screen.getByLabelText('行业筛选'),{target:{value:industry.sector_id}});
+    expanded=true;
+    await act(async()=>{await vi.advanceTimersByTimeAsync(5*60*1000);});
+    expect(within(screen.getByLabelText('行业筛选')).getByRole('option',{name:'银行'})).toBeInTheDocument();
+    expect(screen.getByLabelText('行业筛选')).toHaveValue(industry.sector_id);
+    expect(apiClient.post).not.toHaveBeenCalled();
+  }finally{cleanup();vi.useRealTimers();}
+});

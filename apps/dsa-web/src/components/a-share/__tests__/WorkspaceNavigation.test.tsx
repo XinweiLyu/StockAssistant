@@ -92,3 +92,21 @@ it('does not revive a previous board view when an external selection returns to 
   rerender(<InvestmentWorkspace {...props}/>);
   expect(screen.getByRole('tab',{name:'个股行情'})).toHaveAttribute('aria-selected','true');
 });
+
+it('the actual unified value button prepares then starts one model request with one click',async()=>{
+ let prepared=false;
+ const original=vi.mocked(apiClient.get).getMockImplementation()!;
+ const snapshot={code:'600000',snapshot_id:'value-s1',cutoff:'2026-10-31',economic_model:{model:'operating',checklist:[],allowed_methods:['fcff']},missing:[],facts:[],events:[],evidence:[],peers:{candidates:[],confirmed:[],excluded:[],metrics:{}},financial_view:{latest:{},ttm:{},annual:[],quality:{risks:[]},conflicts:[]}};
+ vi.mocked(apiClient.get).mockImplementation(async(url,config)=>url?.endsWith('/value-research')?{data:{code:'600000',status:prepared?'ready':'missing',snapshot:prepared?snapshot:null}}:original(url,config));
+ vi.mocked(apiClient.post).mockImplementation(async url=>{
+  if(url.endsWith('/value-data')){prepared=true;return {data:{accepted:true,status:'preparing'}};}
+  return {data:{accepted:true,status:'running'}};
+ });
+ render(<Workspace/>);
+ await screen.findByRole('region',{name:'股票研究详情'});
+ fireEvent.change(screen.getByLabelText('研究内容'),{target:{value:'value'}});
+ fireEvent.click(screen.getByRole('button',{name:'生成价值研究'}));
+ await waitFor(()=>expect(vi.mocked(apiClient.post).mock.calls.filter(([url])=>url.endsWith('/value-research'))).toHaveLength(1));
+ expect(vi.mocked(apiClient.post).mock.calls.filter(([url])=>url.endsWith('/value-data'))).toHaveLength(1);
+ expect(vi.mocked(apiClient.post).mock.calls.filter(([url])=>url.endsWith('/integrated-research'))).toHaveLength(0);
+});

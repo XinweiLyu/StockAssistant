@@ -144,3 +144,58 @@ def test_chart_history_carries_only_prior_same_generation_indicator_warmup(marke
     rejected=svc.history('000001','2026-10-08','2026-10-09','qfq')
     assert rejected.warmup_items==[] and len(rejected.items)==2
     assert any('指标预热' in s for s in rejected.limitations)
+
+
+def test_member_failure_is_visible_and_manual_retry_requeues_real_work(market_service):
+    svc = market_service
+    svc.repo.put_sectors('free', [dict(sector_id='em:industry:BK1586', kind='industry',
+        classification='eastmoney-industry', name='软饮料', code='BK1586',
+        source='akshare/eastmoney', fetched_at='2026-10-12')])
+    first = svc.members('em:industry:BK1586', CatalogQuery())
+    assert first['membership']['state'] == 'pending'
+    task = svc.repo.claim('free', svc.clock())
+    svc.repo.finish(task['id'], task['claim_version'], 'failed', error='source unavailable')
+    failed = svc.members('em:industry:BK1586', CatalogQuery())
+    assert failed['membership']['state'] == 'failed'
+    assert failed['membership']['error']
+    retried = svc.members('em:industry:BK1586', CatalogQuery(), refresh=True)
+    assert retried['membership']['state'] == 'pending'
+    new_task = svc.repo.claim('free', svc.clock())
+    assert new_task and new_task['id'] != task['id']
+    # Clicking again during an active fetch cannot duplicate the network work.
+    svc.members('em:industry:BK1586', CatalogQuery(), refresh=True)
+    assert svc.repo.claim('free', svc.clock()) is None
+    class Public:
+        members_source = 'eastmoney/F10'
+        def members(self, sector): return ['000001', '300001']
+    svc.provider_for = lambda settings: Public()
+    svc.handle_task(new_task)
+    svc.repo.finish(new_task['id'], new_task['claim_version'], 'complete')
+    ready = svc.members('em:industry:BK1586', CatalogQuery(concept_id='em:concept:BK2'))
+    assert ready['membership']['state'] == 'ready'
+    assert ready['membership']['source'] == 'eastmoney/F10'
+    assert {s['code'] for s in ready['items']} == {'000001', '300001'}
+
+
+def test_refresh_failure_preserves_usable_members_and_provenance(market_service):
+    svc = market_service
+    svc.members('em:industry:BK1', CatalogQuery(), refresh=True)
+    task = svc.repo.claim('free', svc.clock())
+    svc.repo.finish(task['id'], task['claim_version'], 'pending', error='offline', next_attempt='2026-10-12T02:15:00+00:00')
+    page = svc.members('em:industry:BK1', CatalogQuery())
+    assert page['membership']['state'] == 'ready'
+    assert page['membership']['error']
+    assert page['membership']['retry_at'] == '2026-10-12T02:15:00+00:00'
+    assert len(page['items']) == 2
+    svc.members('em:industry:BK1', CatalogQuery(), refresh=True)
+    resumed = svc.repo.claim('free', svc.clock())
+    assert resumed and resumed['id'] == task['id']
+
+
+def test_stale_members_refresh_in_background_without_emptying_filter(market_service):
+    svc=market_service
+    svc.repo.set_state('free','members:em:industry:BK1',dict(version='v1',fetched_at='2026-10-01T00:00:00+00:00',source='akshare/eastmoney'))
+    page=svc.members('em:industry:BK1',CatalogQuery())
+    assert page['membership']['state']=='ready' and page['membership']['refreshing']
+    assert len(page['items'])==2
+    assert svc.members('em:industry:BK1',CatalogQuery())['membership']['task_id']==page['membership']['task_id']

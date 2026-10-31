@@ -31,3 +31,11 @@ def test_distribution_source_respects_no_free_fallback():
     source=ResearchSources(Provider(),AssistantSettings(mode='tushare2000',free_fallback=False))
     result=source.distributions('000807','2026-10-30')
     assert result['items']==[] and calls==[('dividend',True)]
+
+
+@pytest.mark.parametrize('description', ['10转3股派25.00元(含税,扣税后22.50元)', '10送2转增3派25元(含税)'])
+def test_cash_dividend_uses_original_ten_share_basis_with_stock_distribution(description):
+    from data_provider.a_share_value_facts import normalize_distributions
+    row={'报告期':'2025-12-31','现金分红-现金分红比例描述':description,'方案进度':'实施分配','最新公告日期':'2026-05-12'}
+    result=normalize_distributions('605499',[row],'eastmoney/stock_fhps_detail_em','2026-10-31')[0]
+    assert result['cash_per_share']==pytest.approx(2.5)

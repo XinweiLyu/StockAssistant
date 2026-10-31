@@ -132,3 +132,116 @@ def test_current_integrated_case_dictionary_is_reused_with_version_binding(tmp_p
     snapshot=svc.value.capture('600034')
     assert snapshot['cases']==[bundle['cases']]
     assert any(e['id']=='VALUE_CASES' for e in snapshot['evidence'])
+
+
+def test_prepared_data_without_a_model_run_has_explicit_progress(tmp_path):
+    svc=value_service(tmp_path)
+    svc.value.capture('600034')
+    svc.market.repo.set_state('free','value_progress:600034',dict(phase='preparing',percent=0,message='排队补齐财报'))
+    result=svc.value.get('600034')
+    assert result['status']=='ready' and result['report'] is None and result['review'] is None
+    assert result['progress']['phase']=='prepared'
+    assert '尚未调用AI' in result['progress']['message']
+
+
+def test_value_preparation_uses_same_download_capital_when_snapshot_endpoint_fails(tmp_path,monkeypatch):
+    from data_provider.a_share_value_facts import normalize_valuation_capital
+    svc=value_service(tmp_path)
+    now=svc.value.now()
+    fact=normalize_valuation_capital('600034',[{'数据日期':now[:10],'总股本':734199310}], 'eastmoney/stock_value_em',now)[0]
+    class Source:
+        def __init__(self,*args): pass
+        def financials(self,*args): return dict(facts=[],value_facts=[],status='missing')
+        def capital(self,*args): return dict(facts=[],status='failed',reason='push2 offline')
+        def valuation(self,*args): return dict(facts=[],history=[],status='missing',value_facts=[fact])
+        def distributions(self,*args): return dict(items=[],errors=[],status='missing')
+        def disclosures(self,*args): return dict(events=[],errors=[],status='missing')
+        def news(self,*args): return dict(facts=[],status='missing')
+    monkeypatch.setattr('src.services.a_share_integrated_service.ResearchSources',Source)
+    action=svc.value.prepare('600034',refresh=True)
+    svc.integrated.handle_task(svc.market.repo.task(action['task_id']))
+    result=svc.value.get('600034')
+    assert result['snapshot']['financial_view']['current_capital']['value']==734199310
+    assert not any('总股数未核实' in m for m in result['snapshot']['missing'])
+    data=svc.repo.latest('free','research_data',key='free:600034')
+    assert next(c for c in data['coverage'] if c['category']=='capital')['sources']==['eastmoney/stock_value_em']
+    assert svc.repo.manual_usage('free',now[:10])==0
+
+
+def test_old_failed_model_does_not_hide_new_data_preparation(tmp_path):
+    from src.schemas.a_share_value import GenerateValueRequest
+    from datetime import timezone
+    svc=value_service(tmp_path)
+    svc.settings=svc.settings.model_copy(update={'research_enabled':True,'model':'mock'})
+    snapshot=svc.value.capture('600034')
+    action=svc.value.generate('600034',GenerateValueRequest(snapshot_id=snapshot['snapshot_id']))
+    task=svc.market.repo.claim('free',datetime.now(timezone.utc),kinds=['value_research'])
+    svc.market.repo.finish(task['id'],task['claim_version'],'failed',error='previous model failure')
+    svc.value.prepare('600034',refresh=True)
+    result=svc.value.get('600034')
+    assert result['task']['id']==action['task_id'] and result['task']['state']=='failed'
+    assert result['data_task']['state']=='pending'
+    assert result['status']=='preparing'
+
+
+@pytest.mark.parametrize('source_status,matching_signature,expected_count',[
+    ('failed',True,1),('failed',False,0),('ready',True,0),('missing',True,0),('ready_with_metadata',True,1),('ready_after_partial_batch',True,1),('ready_after_disjoint_batch',True,1),('failed_after_authoritative_empty',True,0),
+])
+def test_failed_disclosure_refresh_preserves_only_same_source_archive(tmp_path,monkeypatch,source_status,matching_signature,expected_count):
+    from src.services.a_share_market_service import source_signature
+    svc=value_service(tmp_path)
+    now=svc.value.now()
+    signature=list(source_signature(svc.settings))
+    old=dict(id='old-capital',code='600034',title='回购进展公告',kind='buyback',
+        published_at='2026-10-29T00:00:00+08:00',observed_at='2026-10-29T12:00:00+08:00',
+        available_at='2026-10-29T12:00:00+08:00',url='https://example.com/report',
+        text_status='ready',text='累计回购股份，未完成计划。',text_hash='original')
+    archive=dict(facts=[],value_facts=[],events=[old,old|dict(id='other',code='600035'),
+        old|dict(id='future',published_at='2027-01-01T00:00:00+08:00')],
+        coverage=[],source_signature=signature if matching_signature else ['other-source'],fetched_at=old['observed_at'])
+    svc.repo.append('free','research_data','free:600034',archive)
+    # An already persisted failure must not prevent recovery from the journal.
+    svc.repo.append('free','research_data','free:600034',archive|dict(events=[]))
+    if source_status=='ready_after_partial_batch':
+        svc.repo.append('free','research_data','free:600034',archive|dict(events=[old|dict(text='',text_status='missing',text_hash=None)]))
+    if source_status=='ready_after_disjoint_batch':
+        svc.repo.append('free','research_data','free:600034',archive|dict(events=[old|dict(id='newer-unrelated')]))
+    if source_status=='failed_after_authoritative_empty':
+        svc.repo.append('free','research_data','free:600034',archive|dict(events=[],coverage=[dict(category='disclosures',status='ready',errors=[])]))
+        svc.repo.append('free','research_data','free:600034',archive|dict(events=[],coverage=[dict(category='disclosures',status='failed',errors=['offline'])]))
+    class Source:
+        def __init__(self,*args): pass
+        def financials(self,*args): return dict(facts=[],value_facts=[],status='missing')
+        def capital(self,*args): return dict(facts=[],status='failed')
+        def valuation(self,*args): return dict(facts=[],history=[],status='missing')
+        def distributions(self,*args): return dict(items=[],errors=[],status='missing')
+        def disclosures(self,*args): return dict(events=[old|dict(text='',text_status='missing',text_hash=None)] if source_status.startswith('ready_') else [],errors=[{'source':'cninfo','error':'RuntimeError'}] if source_status.startswith('failed') else [],status='ready' if source_status.startswith('ready_') else 'failed' if source_status.startswith('failed') else source_status)
+        def news(self,*args): return dict(facts=[],status='missing')
+    monkeypatch.setattr('src.services.a_share_integrated_service.ResearchSources',Source)
+    monkeypatch.setattr('src.services.a_share_integrated_service.fetch_disclosure_text',lambda *args:pytest.fail('ready cache must not be refetched'))
+    action=svc.value.prepare('600034',refresh=True)
+    svc.integrated.handle_task(svc.market.repo.task(action['task_id']))
+    data=svc.repo.latest('free','research_data',key='free:600034')
+    assert len(data['events'])==expected_count
+    coverage=next(c for c in data['coverage'] if c['category']=='disclosures')
+    if expected_count and source_status=='failed':
+        assert data['events'][0]==old
+        assert coverage['status']=='partial' and coverage['cached'] is True
+        assert coverage['cached_at']==old['observed_at'] and coverage['errors']
+        assert any('公告接口本次失败' in m for m in svc.value.get('600034')['snapshot']['missing'])
+    else:
+        assert not coverage.get('cached')
+        if expected_count:
+            assert data['events'][0]==old
+    assert svc.repo.manual_usage('free',now[:10])==0
+
+
+def test_cached_disclosure_freshness_invalidates_existing_snapshot(tmp_path):
+    svc=value_service(tmp_path)
+    original=svc.value.capture('600034')
+    data=svc.repo.latest('free','research_data',key='free:600034')
+    svc.repo.append('free','research_data','free:600034',data|dict(coverage=[dict(category='disclosures',status='partial',cached=True,cached_at=svc.value.now(),errors=['offline'])]))
+    assert svc.value.get('600034')['status']=='stale'
+    updated=svc.value.capture('600034')
+    assert updated['snapshot_id']!=original['snapshot_id']
+    assert any('公告接口本次失败' in m for m in updated['missing'])

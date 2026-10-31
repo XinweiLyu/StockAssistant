@@ -15,11 +15,12 @@ type Props = {
   onSelectIndustry: (sector?: Sector) => void;
   onSelectConcept: (sector?: Sector) => void;
   onClearSector: () => void;
+  onRefreshSectors?: () => void;
 };
 
 export default function MarketStockBrowser({
   onSelectStock, selectedCode, industry, concept, industries, concepts, sectorStatus,
-  onSelectIndustry, onSelectConcept, onClearSector, reloadRevision=0, watchlistSignature='',
+  onSelectIndustry, onSelectConcept, onClearSector, onRefreshSectors, reloadRevision=0, watchlistSignature='',
 }: Props) {
   const [q, setQ] = useState('');
   const [scope, setScope] = useState('all');
@@ -29,10 +30,11 @@ export default function MarketStockBrowser({
   const [paging, setPaging] = useState({ filter: '', page: 1 });
   const [retry, setRetry] = useState(0);
   const [membershipRetry, setMembershipRetry] = useState(0);
-  const [membership, setMembership] = useState<{ filter: string; state: 'pending' | 'ready' | 'failed'; error?: string }>({ filter: '', state: 'ready' });
+  const [membership, setMembership] = useState<{ filter: string; state: 'pending' | 'ready' | 'failed'; error?: string; cached?: boolean }>({ filter: '', state: 'ready' });
+  const refreshMembers = useRef<string | undefined>(undefined);
   const lastChecked = useRef(0);
   const [unknown, setUnknown] = useState(false);
-  const industryId = industry?.sector_id;
+  const industryId = unknown ? undefined : industry?.sector_id;
   const conceptId = concept?.sector_id;
   const filterKey = [industryId, conceptId].join('|');
   const page = paging.filter === filterKey ? paging.page : 1;
@@ -48,23 +50,47 @@ export default function MarketStockBrowser({
     if (!selected.length) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let busy = false;
+    let signature = '';
+    let force = refreshMembers.current === filterKey;
+    refreshMembers.current = undefined;
     const check = async () => {
+      if (busy || controller.signal.aborted) return;
+      busy = true;
+      if (timer) clearTimeout(timer);
+      let delay = 30000;
       try {
-        const pages = await Promise.all(selected.map(id => aShareMarketApi.members(id, { page: 1, page_size: 1 }, controller.signal)));
+        const refresh = force;
+        force = false;
+        const pages = await Promise.all(selected.map(id => aShareMarketApi.members(id, { page: 1, page_size: 1, ...(refresh ? {refresh:true} : {}) }, controller.signal)));
         if (controller.signal.aborted) return;
-        if (pages.every(value => value.membership.state === 'ready')) {
+        const ready = pages.every(value => value.membership.state === 'ready');
+        const failed = pages.find(value => value.membership.error || value.membership.state === 'failed');
+        if (failed) {
+          setMembership({filter:filterKey,state:'failed',cached:ready,error:failed.membership.error||'来源暂不可用，请重试'});
+        } else if (ready) {
           setMembership({ filter: filterKey, state: 'ready' });
-          setRetry(value => value + 1);
         } else {
           setMembership({ filter: filterKey, state: 'pending' });
-          timer = setTimeout(() => void check(), 5000);
         }
+        if (ready) {
+          const next = pages.map(value => value.membership.version).join('|');
+          if (next !== signature) { signature = next; setRetry(value => value + 1); }
+        }
+        delay = failed ? 30000 : !ready || pages.some(value => value.membership.refreshing) ? 5000 : 5 * 60 * 1000;
       } catch (error) {
         if (!controller.signal.aborted) setMembership({ filter: filterKey, state: 'failed', error: error instanceof Error ? error.message : '板块成员资料未取得' });
+      } finally {
+        busy = false;
+        if (!controller.signal.aborted) timer = setTimeout(() => {
+          if (document.visibilityState === 'visible') void check();
+        }, delay);
       }
     };
+    const onVisible = () => { if (document.visibilityState === 'visible') void check(); };
+    document.addEventListener('visibilitychange', onVisible);
     void check();
-    return () => { controller.abort(); if (timer) clearTimeout(timer); };
+    return () => { controller.abort(); if (timer) clearTimeout(timer); document.removeEventListener('visibilitychange', onVisible); };
   }, [industryId, conceptId, filterKey, membershipRetry]);
 
   useEffect(() => {
@@ -111,7 +137,7 @@ export default function MarketStockBrowser({
   }, []);
 
   const result = saved.key === key ? saved.result : undefined;
-  const membershipState = industry || concept ? membership.filter === filterKey ? membership.state : 'pending' : 'ready';
+  const membershipState = industryId || conceptId ? membership.filter === filterKey ? membership.state : 'pending' : 'ready';
   return <aside className="am-stock-browser">
     <div className="am-scope">{[['all', '全部股票'], ['candidates', '规则候选'], ['watchlist', '自选股票']].map(([value, name]) =>
       <button key={value} aria-pressed={scope === value} onClick={() => { setScope(value); setPage(1); }}>{name}</button>)}</div>
@@ -121,18 +147,19 @@ export default function MarketStockBrowser({
       <select aria-label="股票排序" value={sort} onChange={e => { setSort(e.target.value); setPage(1); }}><option value="change">涨跌幅</option><option value="amount">成交额</option><option value="code">代码</option><option value="name">名称</option></select>
     </div>
     <div className="am-sector-selects">
-      <label>行业<select aria-label="行业筛选" value={industry?.sector_id || ''} onChange={e => { onSelectIndustry(industryOptions.find(s => s.sector_id === e.target.value)); setUnknown(false); setPage(1); }}><option value="">全部行业</option>{industryOptions.map(s => <option key={s.sector_id} value={s.sector_id}>{s.name}</option>)}</select></label>
-      <label>概念<select aria-label="概念筛选" value={concept?.sector_id || ''} onChange={e => { onSelectConcept(conceptOptions.find(s => s.sector_id === e.target.value)); setUnknown(false); setPage(1); }}><option value="">全部概念</option>{conceptOptions.map(s => <option key={s.sector_id} value={s.sector_id}>{s.name}</option>)}</select></label>
+      <label>行业<select aria-label="行业筛选" onFocus={onRefreshSectors} value={industryId || ''} onChange={e => { onSelectIndustry(industryOptions.find(s => s.sector_id === e.target.value)); setUnknown(false); setPage(1); }}><option value="">全部行业</option>{industryOptions.map(s => <option key={s.sector_id} value={s.sector_id}>{s.name}</option>)}</select></label>
+      <label>概念<select aria-label="概念筛选" onFocus={onRefreshSectors} value={concept?.sector_id || ''} onChange={e => { onSelectConcept(conceptOptions.find(s => s.sector_id === e.target.value)); setUnknown(false); setPage(1); }}><option value="">全部概念</option>{conceptOptions.map(s => <option key={s.sector_id} value={s.sector_id}>{s.name}</option>)}</select></label>
     </div>
-    <p className="as-footnote am-sector-hint" role={sectorStatus === 'failed' ? 'status' : undefined}>{sectorStatus === 'failed' ? '板块目录获取失败，筛选项暂不可用；可在“设置与数据”重试盘中快照。' : '行业与概念取交集；板块资料随同步逐步补齐。'}</p>
+    <p className="as-footnote am-sector-hint" role={sectorStatus === 'failed' ? 'status' : undefined}>{sectorStatus === 'failed' ? '板块目录更新失败；保留已取得的选项，可点击“刷新筛选项”重试。' : '行业与概念取交集；选择后按需获取成员，完成后自动更新。'}</p>
+    {onRefreshSectors && <button className="am-button" onClick={onRefreshSectors}>刷新筛选项</button>}
     <p className="as-footnote am-auto-refresh">股票列表每 5 分钟自动检查；{saved.key === key && saved.checkedAt ? `最近检查 ${new Date(saved.checkedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit' })}` : '等待首次检查'}。报价以数据源时间为准。</p>
-    <label className="am-checkbox"><input aria-label="未知行业" type="checkbox" checked={unknown} onChange={e => { setUnknown(e.target.checked); setPage(1); }} />仅看行业未归类</label>
+    <label className="am-checkbox"><input aria-label="未知行业" type="checkbox" checked={unknown} onChange={e => { setUnknown(e.target.checked); if(e.target.checked) onSelectIndustry(undefined); setPage(1); }} />仅看行业未归类</label>
     {(industry || concept) && <button className="am-button am-clear-sectors" onClick={() => { onClearSector(); setUnknown(false); setPage(1); }}>清除板块筛选</button>}
     {membershipState === 'pending' && <p className="as-footnote" role="status">正在获取板块成分股，完成后自动更新股票列表…</p>}
-    {membershipState === 'failed' && <p role="alert">板块成分股获取失败：{membership.error}。<button onClick={() => setMembershipRetry(value => value + 1)}>重试板块成员</button></p>}
+    {membershipState === 'failed' && <p role="alert">板块成分股更新失败：{membership.error}。{membership.cached ? '正在显示上一版成员缓存。' : '成员资料尚未取得，此时空列表不代表板块没有股票。'}<button onClick={() => { refreshMembers.current = filterKey; setMembershipRetry(value => value + 1); }}>重试板块成员</button></p>}
     {saved.key === key && saved.error && <p role="alert">{saved.error}；如仍显示股票，列表为上次成功获取的缓存。<button onClick={() => setRetry(value => value + 1)}>重试目录</button></p>}
     <div className="am-stock-list">{result?.items?.map(stock => <button className={selectedCode === stock.code ? 'active' : ''} key={stock.code} aria-label={`${stock.name} ${stock.code}`} onClick={() => onSelectStock(stock.code)}><span><b>{stock.name}</b><small>{stock.code} · {stock.identity_verified ? '已核实' : stock.demo ? '虚构' : '身份待核实'}</small></span><span className={stock.quote?.change == null ? '' : stock.quote.change >= 0 ? 'am-up' : 'am-down'}><b>{stock.quote?.price?.toFixed(2) ?? '—'}</b><small>{stock.quote?.change == null ? '资料不足' : `${stock.quote.change >= 0 ? '+' : ''}${(stock.quote.change * 100).toFixed(2)}%`}</small></span></button>)}</div>
-    {!result?.items?.length && membershipState !== 'pending' && <p className="as-footnote">{result ? '所选范围暂无股票；可调整搜索、市场或板块筛选。' : '查询目录…'}</p>}
+    {!result?.items?.length && membershipState === 'ready' && <p className="as-footnote">{result ? '所选范围暂无匹配股票；行业与概念取交集，可清除一个板块或调整搜索、市场、候选范围。' : '查询目录…'}</p>}
     <div className="am-pagination"><button disabled={page <= 1} onClick={() => setPage(current => current - 1)}>上页</button><span>{page} / {Math.max(1, Math.ceil((result?.total || 0) / 50))} · {result?.total || 0} 只</span><button disabled={page * 50 >= (result?.total || 0)} onClick={() => setPage(current => current + 1)}>下页</button></div>
   </aside>;
 }

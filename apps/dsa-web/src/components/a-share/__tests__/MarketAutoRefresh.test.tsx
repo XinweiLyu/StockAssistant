@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { act, cleanup, render, screen, fireEvent, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { aShareMarketApi } from '../../../api/aShareMarket';
@@ -125,4 +126,64 @@ it('does not refetch an all-stocks list merely because the watchlist changes',as
   rerender(<MarketStockBrowser {...props} watchlistSignature=""/>);
   await act(async()=>{await vi.advanceTimersByTimeAsync(250);});
   expect(aShareMarketApi.stocks).toHaveBeenCalledTimes(calls);
+});
+
+it('shows a source failure instead of spinning forever and retries the upstream fetch', async () => {
+  const industry = {sector_id:'em:industry:BK1586',name:'软饮料',kind:'industry'} as Sector;
+  let ready=false;
+  vi.mocked(aShareMarketApi.members).mockImplementation(async (_id, params) => {
+    if(params.refresh) ready=true;
+    return {items:[],total:ready?1:0,page:1,page_size:1,membership:{codes:ready?['000848']:[],version:ready?'v2':null,state:ready?'ready':'failed',error:ready?undefined:'来源暂不可用'}};
+  });
+  vi.mocked(aShareMarketApi.stocks).mockImplementation(async()=>({items:ready?[{code:'000848',name:'承德露露',source:'fixture',quote:null,industries:[],concepts:[]}]:[],total:ready?1:0,page:1,page_size:50}));
+  render(<MarketStockBrowser onSelectStock={()=>{}} industry={industry} industries={[industry]} concepts={[]} sectorStatus="ready" onSelectIndustry={()=>{}} onSelectConcept={()=>{}} onClearSector={()=>{}}/>);
+  await act(async()=>{await vi.advanceTimersByTimeAsync(250);});
+  expect(screen.getByRole('alert')).toHaveTextContent('来源暂不可用');
+  expect(screen.queryByText(/正在获取板块成分股/)).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'重试板块成员'}));
+  await act(async()=>{await vi.advanceTimersByTimeAsync(0);});
+  await act(async()=>{await vi.advanceTimersByTimeAsync(250);});
+  expect(screen.getByRole('button',{name:'承德露露 000848'})).toBeInTheDocument();
+});
+
+it('keeps checking ready memberships so changed constituents replace the cached list',async()=>{
+  const industry={sector_id:'em:industry:BK1586',name:'软饮料',kind:'industry'} as Sector;
+  let added=false;
+  vi.mocked(aShareMarketApi.members).mockImplementation(async()=>({items:[],total:0,page:1,page_size:1,membership:{codes:[],version:added?'v2':'v1',state:'ready'}}));
+  vi.mocked(aShareMarketApi.stocks).mockImplementation(async()=>({items:added?[{code:'000848',name:'承德露露',source:'fixture',quote:null,industries:[],concepts:[]}]:[],total:added?1:0,page:1,page_size:50}));
+  render(<MarketStockBrowser onSelectStock={()=>{}} industry={industry} industries={[industry]} concepts={[]} sectorStatus="ready" onSelectIndustry={()=>{}} onSelectConcept={()=>{}} onClearSector={()=>{}}/>);
+  await act(async()=>{await vi.advanceTimersByTimeAsync(250);});
+  added=true;
+  await act(async()=>{await vi.advanceTimersByTimeAsync(5*60*1000);});
+  await act(async()=>{await vi.advanceTimersByTimeAsync(250);});
+  expect(aShareMarketApi.members).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole('button',{name:'承德露露 000848'})).toBeInTheDocument();
+});
+
+it('distinguishes a genuine empty intersection from unavailable board members',async()=>{
+  const industry={sector_id:'em:industry:BK1283',name:'银行',kind:'industry'} as Sector;
+  const concept={sector_id:'em:concept:BK0477',name:'酿酒概念',kind:'concept'} as Sector;
+  render(<MarketStockBrowser onSelectStock={()=>{}} industry={industry} concept={concept} industries={[industry]} concepts={[concept]} sectorStatus="ready" onSelectIndustry={()=>{}} onSelectConcept={()=>{}} onClearSector={()=>{}}/>);
+  await act(async()=>{await vi.advanceTimersByTimeAsync(250);});
+  expect(screen.getByText(/所选范围暂无匹配股票；行业与概念取交集/)).toBeInTheDocument();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(screen.queryByText(/正在获取板块成分股/)).not.toBeInTheDocument();
+});
+
+
+it('does not silently revive an old industry when leaving the unclassified filter',async()=>{
+  const initial={sector_id:'em:industry:BK1283',name:'银行',kind:'industry'} as Sector;
+  const concept={sector_id:'em:concept:BK0477',name:'酿酒概念',kind:'concept'} as Sector;
+  function Browser(){
+    const [industry,setIndustry]=useState<Sector|undefined>(initial);
+    const [selected,setSelected]=useState<Sector>();
+    return <MarketStockBrowser onSelectStock={()=>{}} industry={industry} concept={selected} industries={[initial]} concepts={[concept]} sectorStatus="ready" onSelectIndustry={setIndustry} onSelectConcept={setSelected} onClearSector={()=>{}}/>;
+  }
+  render(<Browser/>);
+  await act(async()=>{await vi.advanceTimersByTimeAsync(250);});
+  fireEvent.click(screen.getByLabelText('未知行业'));
+  fireEvent.change(screen.getByLabelText('概念筛选'),{target:{value:concept.sector_id}});
+  await act(async()=>{await vi.advanceTimersByTimeAsync(250);});
+  expect(screen.getByLabelText('行业筛选')).toHaveValue('');
+  expect(screen.getByLabelText('概念筛选')).toHaveValue(concept.sector_id);
 });

@@ -24,7 +24,7 @@ export default function ResearchWorkspaceToolbar({result,error,message,busy=fals
    {onScope&&<label>研究内容<select aria-label="研究内容" value={scope} disabled={working} onChange={e=>onScope(e.target.value as ResearchScope)}><option value="trading">短期交易</option><option value="value">价值投资</option><option value="both">短期交易与价值投资</option></select></label>}
    {scope!=='value'&&<label>综合预测期限<select aria-label="综合研究期限" value={horizon} onChange={e=>onHorizon(Number(e.target.value))}>{[5,20,60].map(h=><option key={h} value={h}>{h}交易日</option>)}</select></label>}
    <button className="am-primary" disabled={working||loading} onClick={()=>onGenerate(false)}>{scope==='value'?'生成价值研究':'生成综合研究与价位'}</button>
-   <details><summary>资料与重新生成</summary><button className="am-button" disabled={working} onClick={onPrepare}>更新研究资料</button>{(report||['ready','failed','interrupted'].includes(valueStatus||''))&&<button className="am-button" disabled={working} onClick={()=>onGenerate(true)}>重新生成（按用量计费）</button>}<p className="as-footnote">首次先准备资料；查看、切换期限不调用模型。重新生成会产生新的模型用量。</p></details>
+   <details><summary>资料与重新生成</summary><button className="am-button" disabled={working} onClick={onPrepare}>更新研究资料</button>{(report||['ready','failed','interrupted'].includes(valueStatus||''))&&<button className="am-button" disabled={working} onClick={()=>onGenerate(true)}>重新生成（按用量计费）</button>}<p className="as-footnote">生成价值研究会先补齐资料，再继续一次模型复核；单独更新资料、查看与切换期限不调用模型。重新生成会产生新的模型用量。</p></details>
   </div>
   {error&&<p role="alert">{error}</p>}{message&&<p role="status">{message}</p>}
   {loading&&!result&&<p role="status">正在读取已保存的研究与预测区间…</p>}

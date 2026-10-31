@@ -1,4 +1,4 @@
-import { useCallback,useEffect,useState } from 'react';
+import { useCallback,useEffect,useRef,useState } from 'react';
 import type { AssistantBoard } from '../../types/aShare';
 import { aShareMarketApi } from '../../api/aShareMarket';
 import type { Sector } from '../../types/aShareMarket';
@@ -21,12 +21,16 @@ export default function InvestmentWorkspace({board,selectedCode,selectedStrategy
   const refreshPriceList=useCallback(()=>setPriceReload(value=>value+1),[]);
   const [groups,setGroups]=useState<{industry:Sector[];concept:Sector[]}>({industry:[],concept:[]});
   const [sectorStatus,setSectorStatus]=useState<'loading'|'failed'|'ready'>('loading');
+  const refreshSectors=useRef<()=>void>(()=>{});
   useEffect(()=>{
     const controller=new AbortController();
     const latest={industry:[] as Sector[],concept:[] as Sector[]};
     let busy=false;
+    let lastChecked=0;
+    let timer:ReturnType<typeof setTimeout>|undefined;
     const load=async()=>{
-      if(busy)return;
+      if(busy||controller.signal.aborted)return;
+      if(timer)clearTimeout(timer);
       busy=true;
       try{
         const [industryResult,conceptResult,jobsResult]=await Promise.allSettled([
@@ -35,18 +39,27 @@ export default function InvestmentWorkspace({board,selectedCode,selectedStrategy
           aShareMarketApi.jobs(),
         ]);
         if(controller.signal.aborted)return;
-        if(industryResult.status==='fulfilled')latest.industry=industryResult.value.items||[];
-        if(conceptResult.status==='fulfilled')latest.concept=conceptResult.value.items||[];
+        if(industryResult.status==='fulfilled'&&industryResult.value.items?.length)latest.industry=industryResult.value.items;
+        if(conceptResult.status==='fulfilled'&&conceptResult.value.items?.length)latest.concept=conceptResult.value.items;
         setGroups({...latest});
         const failed=industryResult.status==='rejected'||conceptResult.status==='rejected'||
           (jobsResult.status==='fulfilled'&&jobsResult.value.health?.['health:sector_catalog']?.status==='failed');
         setSectorStatus(latest.industry.length&&latest.concept.length?'ready':failed?'failed':'loading');
-        if(latest.industry.length&&latest.concept.length)clearInterval(timer);
-      }finally{busy=false;}
+        lastChecked=Date.now();
+      }finally{
+        busy=false;
+        if(!controller.signal.aborted)timer=setTimeout(()=>{
+          if(document.visibilityState==='visible')void load();
+        },latest.industry.length&&latest.concept.length?5*60*1000:30000);
+      }
     };
-    const timer=setInterval(()=>void load(),30000);
+    const onVisible=()=>{
+      if(document.visibilityState==='visible'&&Date.now()-lastChecked>=30000)void load();
+    };
+    refreshSectors.current=()=>{void load();};
+    document.addEventListener('visibilitychange',onVisible);
     void load();
-    return ()=>{controller.abort();clearInterval(timer);};
+    return ()=>{controller.abort();if(timer)clearTimeout(timer);document.removeEventListener('visibilitychange',onVisible);};
   },[board.settings.mode]);
   const validSelection=board.settings.mode==='demo'?selectedCode.startsWith('DEMO'): /^\d{6}$/.test(selectedCode);
   const code=validSelection?selectedCode:board.report?.candidates[0]?.code||'';
@@ -69,7 +82,7 @@ export default function InvestmentWorkspace({board,selectedCode,selectedStrategy
     </div>
     <div id="am-stock-panel" role="tabpanel" aria-labelledby="am-stock-tab" hidden={view!=='stock'}>
       <div className="am-workspace-grid">
-        <MarketStockBrowser key={browserRevision} reloadRevision={priceReload} watchlistSignature={[...board.settings.watchlist].sort().join('|')} selectedCode={code} onSelectStock={onSelectStock} industry={industry} concept={concept} industries={groups.industry} concepts={groups.concept} sectorStatus={sectorStatus} onSelectIndustry={s=>{setIndustry(s);setSector(s||concept);}} onSelectConcept={s=>{setConcept(s);setSector(s||industry);}} onClearSector={clear}/>
+        <MarketStockBrowser key={browserRevision} reloadRevision={priceReload} watchlistSignature={[...board.settings.watchlist].sort().join('|')} selectedCode={code} onSelectStock={onSelectStock} industry={industry} concept={concept} industries={groups.industry} concepts={groups.concept} sectorStatus={sectorStatus} onRefreshSectors={()=>refreshSectors.current()} onSelectIndustry={s=>{setIndustry(s);setSector(s||concept);}} onSelectConcept={s=>{setConcept(s);setSector(s||industry);}} onClearSector={clear}/>
         <div className="am-main">
           {code?<StockDetail key={code} code={code} candidate={candidate} onWatchlist={onWatchlist} onResearch={onResearch} research={research} events={board.events} onPriceRefresh={refreshPriceList} disabled={!board.settings.research_enabled}/>:<div className="as-empty">从左侧搜索或选择股票，即可在此查看 K 线、指标、AI 价位和证据。</div>}
           <p className="as-footnote am-model-budget">手动模型调用：今日 {board.manual_model_usage??0} 次（不限次，按实际用量计费） · 自动研究上限：{board.model_usage??0} / {board.settings.daily_model_calls??0}</p>

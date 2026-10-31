@@ -1,6 +1,7 @@
 """One optional model call, four perspectives, strictly bounded delivered evidence."""
 import json
 import time
+import re
 from src.schemas.a_share_value import ValueAssumptions
 from src.services.a_share_research import ResearchEngine
 
@@ -9,7 +10,8 @@ PROMPT = '''你是价值投资研究助手。经营质量、估值、反方、�
 低PE、跌价、同比增长不证明低估或超预期。最新报告缺失项不能拿旧年度填当前，旧股本不能替代当前股本。说明市场担忧是否只是推断，给反证、验证节点和失效条件。
 不输出仓位、订单、买卖指令、胜率或保证收益。不把历史事件股价涨幅直接加到企业价值。
 仅返回JSON：perspectives:[{text,sources}], theses:[{text,sources,market_concern,counterevidence,verification,invalidation}], counterevidence:[{text,sources}], missing:[字符串], proposed_assumptions:对象或null。
-资料不全时proposed_assumptions=null，说明具体缺口，不能以0填缺失事实。不要输出自行计算的目标价。
+按适用方法逐项检查必要输入；无法计算时proposed_assumptions=null并说明缺口，不能以0填缺失事实。审计待复核、缺少同业倍数或实时行情不等于禁止一切待核对估值草案；有充分来源时可提出明确附条件的未来经营或股利假设，风险未核实须保留未复核状态。不要输出自行计算的目标价。
+区分供应商缺失与本次输入未送达。available_coverage仅描述快照可用范围，不表示你收到全部原文；事件text_excerpts是带偏移的原文片段。已完成且当前股本已核实的历史发行/送转不自动禁止草案；未来已知资本变化未桥接时仍不强行估值。
 如有足够证据可提出明确标为假设的预测，proposed_assumptions结构：
 {code,snapshot_id,primary_method:fcff/fcfe/rim/ddm/nav,cases:[保守conservative/基准base/有利upside三组],risk_review:{},holding_cases:[],theses:[]}。
 每个case包含method,scenario,discount,terminal_growth,shares,fixed_capital:true,evidence_ids,rationale。
@@ -25,6 +27,87 @@ NAV需assets:[{id,value}],liabilities:[{id,value}],costs,complete:true，有重�
 这些是待用户核对的草案假设，不是已核实事实。业务数据和推断必须区分。'''
 
 
+def _record_content(record):
+    value=record.get('content','')
+    if isinstance(value,str):
+        try: return json.loads(value)
+        except (ValueError,TypeError): return value
+    return value
+
+
+def _document_record(event):
+    """Select actual source windows, including material notes beyond the cover page."""
+    text=event.get('text') or ''
+    windows=[(0,min(180,len(text)))]
+    for pattern in (r'总股本|实收资本|股本发生', r'香港联交所', r'回购专用|累计回购|注销',
+                    r'受限|审计意见', r'按产品|主营业务|毛利率', r'募集资金|资本公积', r'H\s*股', r'分红|权益分派'):
+        match=re.search(pattern,text)
+        if match:
+            start,end=max(0,match.start()-130),min(len(text),match.end()+230)
+            overlapping=[(a,b) for a,b in windows if a<=end and start<=b]
+            if overlapping:
+                start=min(start,*(a for a,b in overlapping));end=max(end,*(b for a,b in overlapping))
+                windows=[w for w in windows if w not in overlapping]
+            windows.append((start,end))
+    excerpts=[]
+    used=0
+    for start,end in windows:
+        excerpt=text[start:end]
+        size=len(excerpt.encode())
+        if used+size>4700: continue
+        excerpts.append(dict(start=start,end=end,text=excerpt))
+        used+=size
+    content={k:event.get(k) for k in ('title','kind','published_at','source','url','text_status','text_hash')}
+    content.update(text_excerpts=excerpts,original_characters=len(text),excerpted=True)
+    return dict(id=event['id'],source=event.get('source'),content=content)
+
+
+def build_value_payload(s):
+    """Keep required evidence classes ahead of repetitive announcements/history."""
+    known={e['id']:e for e in s['evidence']}
+    facts=sorted(s.get('facts',[]),key=lambda f:f['report_period'],reverse=True)
+    period=max((f['report_period'] for f in facts if f['metric']!='current_shares'),default='')
+    previous=str(int(period[:4])-1)+period[4:] if period else ''
+    payload=dict(code=s['code'],name=s['name'],snapshot_id=s['snapshot_id'],cutoff=s['cutoff'],
+                 economic_model=s['economic_model'],evidence=[],
+                 available_coverage=dict(financial_fact_count=len(facts),
+                    annual_periods=sorted({f['report_period'] for f in facts if f.get('period_basis')=='annual'}),
+                    financial_period=period,missing=s.get('missing',[])))
+    def compact(f):
+        fields=('metric','value','unit','report_period','period_basis','scope','attribution')
+        return dict(id=f['fact_id'],source=f['source'],content={k:f.get(k) for k in fields})
+    fact_ids={f['fact_id'] for f in facts}
+    extras=[e for e in s['evidence'] if e['id'] not in fact_ids]
+    quotes=[dict(id=e['id'],source=e.get('source'),content=_record_content(e)) for e in extras
+            if e.get('source') in ('eastmoney/stock_value_em','tushare/daily_basic')]
+    dividends=[dict(id=e['id'],source=e.get('source'),content=_record_content(e)) for e in extras
+               if e.get('source') in ('eastmoney/stock_fhps_detail_em','tushare/dividend')]
+    dividends.sort(key=lambda e:e['content'].get('report_period','') if isinstance(e['content'],dict) else '',reverse=True)
+    documents=[e for e in s.get('events',[]) if e.get('id') in known and e.get('text_status')=='ready' and e.get('text')]
+    documents.sort(key=lambda e:(e.get('published_at') or ''),reverse=True)
+    # Current earnings notes and the latest capital/distribution update each get a seat.
+    earnings=next((e for e in documents if e.get('kind')=='earnings' or '年度报告' in e.get('title','')),None)
+    capital=next((e for e in documents if re.search('回购|股本|权益分派|发行',e.get('title',''))),None)
+    chosen_docs=[e for e in (earnings,capital) if e]
+    core={'revenue','net_profit','operating_profit','operating_cashflow','capex'}
+    primary=[compact(f) for f in facts if f['fact_id'] in known and (f['report_period']==period or f['metric']=='current_shares')]
+    annual=[compact(f) for f in facts if f['fact_id'] in known and f.get('period_basis')=='annual' and f['metric'] in core]
+    comparative=[compact(f) for f in facts if f['fact_id'] in known and f['report_period']==previous and f['metric'] in core]
+    evidence=quotes+primary+dividends[:10]+[_document_record(e) for e in chosen_docs]+annual+comparative
+    evidence += [compact(f) for f in facts if f['fact_id'] in known]
+    evidence += [dict(id=e['id'],source=e.get('source'),content=_record_content(e)) for e in extras]
+    sent=set()
+    for record in evidence:
+        if record['id'] in sent: continue
+        # Non-priority raw strings remain bounded, and cannot consume reserved seats.
+        if isinstance(record.get('content'),str): record=record|dict(content=record['content'][:2200])
+        candidate=payload|dict(evidence=payload['evidence']+[record])
+        messages=[dict(role='system',content=PROMPT),dict(role='user',content=json.dumps(candidate,ensure_ascii=False))]
+        if len(json.dumps(messages,ensure_ascii=False).encode())<=48000:
+            payload=candidate;sent.add(record['id'])
+    return payload,sent,[e['id'] for e in s['evidence'] if e['id'] not in sent]
+
+
 class ValueResearchEngine:
     def __init__(self, repo, completion=None):
         self.repo = repo
@@ -33,51 +116,7 @@ class ValueResearchEngine:
     def run(self, snapshot, settings, progress):
         s = snapshot.model_dump() if hasattr(snapshot, 'model_dump') else snapshot
         started = time.monotonic()
-        payload = dict(code=s['code'], name=s['name'], snapshot_id=s['snapshot_id'], cutoff=s['cutoff'],
-                       economic_model=s['economic_model'], evidence=[])
-        sent, omitted = set(), []
-        # Balance newest operating/claim data, comparable TTM periods, events and history.
-        # Entire histories of one metric must not crowd current operating inputs out.
-        known = {e['id']: e for e in s['evidence']}
-        facts = sorted(s.get('facts', []), key=lambda f: f['report_period'], reverse=True)
-        financial_period = max((f['report_period'] for f in facts if f['metric'] != 'current_shares'), default='')
-        previous_ytd = str(int(financial_period[:4])-1)+financial_period[4:] if financial_period else ''
-        def compact(f):
-            fields = ('code', 'metric', 'value', 'unit', 'report_period', 'period_basis', 'scope', 'attribution', 'available_at', 'raw_field')
-            return dict(id=f['fact_id'], source=f['source'], content={k:f.get(k) for k in fields})
-        primary = [compact(f) for f in facts if f['fact_id'] in known and (f['report_period'] == financial_period or f['metric'] == 'current_shares')]
-        comparative = [compact(f) for f in facts if f['fact_id'] in known and f['report_period'] == previous_ytd]
-        annual = [compact(f) for f in facts if f['fact_id'] in known and f['report_period'].endswith('12-31')]
-        extras = [e for e in s['evidence'] if e['id'] not in {f['fact_id'] for f in facts}]
-        event_ids = {e.get('id') or e.get('event_id') for e in s.get('events', [])}
-        extras.sort(key=lambda e: 0 if e['id'] in event_ids or e['id'] == 'VALUE_CASES' else 1)
-        selected_extras, extra_bytes = [], 0
-        for e in extras:
-            content = e.get('content', '')
-            record = e | dict(content=content[:2200] if isinstance(content,str) else content)
-            size = len(json.dumps(record, ensure_ascii=False).encode())
-            if extra_bytes+size <= 10000:
-                selected_extras.append(record)
-                extra_bytes += size
-        evidence = primary+comparative+selected_extras+annual
-        evidence += [e for e in s['evidence'] if e['id'] not in {v['id'] for v in evidence}]
-        for e in evidence:
-            if e['id'] in sent:
-                continue
-            content = e.get('content', '')
-            if isinstance(content, str):
-                content = content[:10000]
-                try:
-                    content = json.loads(content)
-                except (ValueError, TypeError):
-                    pass
-            candidate = dict(id=e['id'], source=e.get('source'), content=content)
-            test = payload | dict(evidence=payload['evidence']+[candidate])
-            messages = [dict(role='system', content=PROMPT), dict(role='user', content=json.dumps(test, ensure_ascii=False))]
-            if len(json.dumps(messages, ensure_ascii=False).encode()) <= 48000:
-                payload = test
-                sent.add(e['id'])
-        omitted = [e['id'] for e in s['evidence'] if e['id'] not in sent]
+        payload, sent, omitted = build_value_payload(s)
         progress(dict(phase='ai', percent=55, message='一次模型调用：经营质量、估值、反方与资本分配复核', elapsed_seconds=0, eta_seconds=None))
         self.repo.record_manual_call(s['cutoff'][:10])
         value = self.completion([dict(role='system', content=PROMPT), dict(role='user', content=json.dumps(payload, ensure_ascii=False))], settings.model)

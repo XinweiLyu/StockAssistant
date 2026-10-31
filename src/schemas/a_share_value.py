@@ -2,7 +2,7 @@
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, field_validator, model_validator
 
-VERSION = 'value-research-v1'
+VERSION = 'value-research-v2'
 
 
 class ValueModel(BaseModel):

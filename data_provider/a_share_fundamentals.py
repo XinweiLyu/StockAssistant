@@ -293,4 +293,6 @@ class ResearchSources:
             observed_at=observed_at,available_at=observed_at,published_at=None,report_period=None,
             vintage_quality='provider_latest',historical_eligible=False,content_hash=identity,
             url='https://data.eastmoney.com/gzfx/detail/'+code+'.html')
-        return dict(status='partial' if errors else 'ready',facts=[fact],history=history,errors=errors)
+        from data_provider.a_share_value_facts import normalize_valuation_capital
+        return dict(status='partial' if errors else 'ready',facts=[fact],history=history,errors=errors,
+                    value_facts=normalize_valuation_capital(code, rows, source, observed_at))

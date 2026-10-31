@@ -81,8 +81,8 @@ def sectors(kind:Literal['industry','concept']='industry',classification:str|Non
     return invoke(lambda s:s.market.sectors(SectorQuery(kind=kind,classification=classification,period=period)))
 
 @router.get('/sectors/{sector_id}/members')
-def members(sector_id:str,query:CatalogQuery=Depends()):
-    return invoke(lambda s:s.market.members(sector_id,query),True)
+def members(sector_id:str,query:CatalogQuery=Depends(),refresh:bool=False):
+    return invoke(lambda s:s.market.members(sector_id,query,refresh=refresh),True)
 
 @router.get('/sectors/{sector_id}/history')
 def sector_history(sector_id:str,start:str|None=None,end:str|None=None,refresh:bool=False):
