@@ -11,6 +11,9 @@ INCOME = {
     'total_profit': ('TOTAL_PROFIT', 'total_profit'),
     'income_tax': ('INCOME_TAX', 'income_tax'),
     'rd_expense': ('RESEARCH_EXPENSE', 'rd_exp'),
+    'interest_expense': ('FE_INTEREST_EXPENSE', None),
+    'interest_income': ('FE_INTEREST_INCOME', None),
+    'finance_expense': ('FINANCE_EXPENSE', None),
 }
 BALANCE = {
     'cash': ('MONETARYFUNDS', 'money_cap'), 'assets': ('TOTAL_ASSETS', 'total_assets'),
@@ -21,12 +24,26 @@ BALANCE = {
     'bonds': ('BOND_PAYABLE', 'bond_payable'), 'receivables': ('ACCOUNTS_RECE', 'accounts_receiv'),
     'inventory': ('INVENTORY', 'inventories'), 'payables': ('ACCOUNTS_PAYABLE', 'acct_payable'),
     'shares': ('TOTAL_SHARES', 'total_share'),
+    'lease_liabilities': ('LEASE_LIAB', None),
+    'fixed_assets': ('FIXED_ASSET', None),
+    'construction_in_progress': ('CIP', None),
+    'right_of_use_assets': ('USERIGHT_ASSET', None),
+    'noncurrent_due_within_year': ('NONCURRENT_LIAB_1YEAR', None),
+    'trading_financial_assets': ('TRADE_FINASSET_NOTFVTPL', None),
+    'treasury_share_cost': ('TREASURY_SHARES', None),
 }
 CASHFLOW = {
     'operating_cashflow': ('NETCASH_OPERATE', 'n_cashflow_act'),
     'capex': ('CONSTRUCT_LONG_ASSET', 'c_pay_acq_const_fiolta'),
     'borrowing': ('RECEIVE_LOAN_CASH', 'c_recp_borrow'),
     'debt_repayment': ('REPAY_DEBT_CASH', 'c_prepay_amt_borr'),
+    # FA_IR_DEPR and OILGAS_BIOLOGY_DEPR may duplicate the same reported
+    # aggregate; retain one and keep other amortization components separate.
+    'depreciation': ('FA_IR_DEPR', None),
+    'intangible_amortization': ('IA_AMORTIZE', None),
+    'prepaid_amortization': ('LPE_AMORTIZE', None),
+    'right_of_use_depreciation': ('USERIGHT_ASSET_AMORTIZE', None),
+    'dividend_profit_interest_paid': ('ASSIGN_DIVIDEND_PORFIT', None),
 }
 CONTRACTS = {
     'eastmoney/stock_profit_sheet_by_report_em': (INCOME, 0),

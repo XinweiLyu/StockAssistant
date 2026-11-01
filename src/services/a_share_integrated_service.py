@@ -382,7 +382,8 @@ class IntegratedResearchService:
                     and e.get('text_status')=='ready' and e.get('text')):
                     saved_text[key]=e
         events, text_coverage = prepare_disclosure_batch(disclosure_events, list(saved_text.values()),
-            now, market.calendar(), end, fetch_disclosure_text)
+            now, market.calendar(), end, fetch_disclosure_text,
+            purpose='value' if payload.get('value_only') and payload.get('include_peers') else 'trading')
         stock = market.stock(code)
         news = source.news(code, stock['name'], stock.get('industries', []), now) if payload.get('include_peers') else dict(status='missing', facts=[])
         facts = financial['facts'] + valuation['facts'] + news['facts']

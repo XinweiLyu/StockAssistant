@@ -32,10 +32,13 @@ def evaluate_holding(case, valuation, start_date, months):
             raise ValueError('当下估值尚未通过数学与适用性检查')
         k = required(case, 'realization_factor', 0, 5)
         initial = required(case, 'price', 1e-12)
-        r, shares = required(case, 'discount', .0001, 1), required(case, 'shares', 1e-12)
+        r, shares = required(case, 'discount', .0001, 1), required(valuation if valuation.get('capital_bridge') else case, 'shares', 1e-12)
         end = add_months(start_date, months)
         t = (date.fromisoformat(end)-date.fromisoformat(start_date[:10])).days/365.25
         schedule = cashflow_schedule(case, start_date)
+        if valuation.get('capital_bridge'):
+            if len(valuation.get('flows',[]))!=5: raise ValueError('股本桥接后的分红排程缺失')
+            schedule=[v|dict(amount=valuation['flows'][i]) for i,v in enumerate(schedule)]
         future = sum(v['amount']/(1+r)**(v['time']-t) for v in schedule if v['date'] > end)
         future += valuation['terminal_value']/(1+r)**(schedule[-1]['time']-t)
         intrinsic = future/shares

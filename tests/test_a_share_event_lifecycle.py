@@ -75,6 +75,20 @@ def test_changed_document_url_does_not_inherit_old_verified_text():
     assert result[0]['text'] == '修订原文'
 
 
+def test_value_preparation_reserves_slots_for_full_annual_and_current_capital():
+    days=[(date(2026,1,1)+timedelta(days=i)).isoformat() for i in range(365)]
+    def event(identity,title,day,kind='earnings'):
+        return dict(id=identity,title=title,published_at=day,kind=kind,url='https://example/'+identity,text_status='missing')
+    events=[event('meeting'+str(i),'2026年前三季度业绩说明会',f'2026-10-{29-i:02}') for i in range(10)]
+    events += [event('annual','2025年年度报告','2026-03-31'),event('quarter','2026年第三季度报告','2026-10-30'),event('capital','关于回购股份的进展公告','2026-10-10','buyback')]
+    events.append(event('not-annual','关于2025年年度报告问询函的回复','2026-10-31'))
+    rows,coverage=prepare_disclosure_batch(events,[],'2026-10-31T10:00:00+08:00',days,'2026-10-30',
+        lambda url,day:dict(status='ready',text=url,content_hash=url),purpose='value')
+    ready={e['id'] for e in rows if e.get('text_status')=='ready'}
+    assert {'annual','quarter','capital'}<=ready
+    assert coverage['attempted']<=6
+
+
 @pytest.mark.parametrize('published', ['2026-10-17T12:00:00+08:00', '2026-10-19T09:00:00+08:00'])
 def test_known_weekend_and_intraday_announcements_use_last_completed_close(published):
     days = ['2026-10-15', '2026-10-16']

@@ -143,6 +143,8 @@ class ValueResearchService:
             candidates.append(self._peer_row(pstock, pdata, model, pview, industry))
         previous_a = self._latest('value_assumptions', code) or {}
         peers = build_peer_comparison(target, candidates, previous_a.get('peer_confirmations', []))
+        evidence.append(dict(id='VALUE_PEERS',source='已保存同行候选资料（主营可比性须另行核实）',
+            content=json.dumps(peers,ensure_ascii=False)))
         cases = self._case_library(code, cutoff)
         if cases:
             evidence.append(dict(id='VALUE_CASES', source='已保存的可比事件研究', content=json.dumps(cases[:20], ensure_ascii=False)))
@@ -235,7 +237,7 @@ class ValueResearchService:
             if not snapshot or report['snapshot_id'] != snapshot['snapshot_id'] or reasons or (assumptions and report['assumptions_revision'] != assumptions['revision']):
                 report.update(valuation_state='stale', stale_reasons=reasons or ['资料或假设版本已变化'])
                 report['comparison']['conditional_price'] = None
-            else:
+            elif report.get('valuation_state')!='reference' and report.get('parameter_origin')!='reference_sensitivity_v1':
                 conservative = next((c.get('value_per_share') for c in report['valuation_cases'] if c['method'] == report['primary_method'] and c['scenario'] == 'conservative' and c['state'] == 'ready'), None)
                 report['comparison'] = compare_price(conservative, self._quote(stock), (assumptions or {}).get('margin_required'),
                     dict(eligible=report['valuation_state'] == 'conditional' and self._eligibility(stock)['eligible']))
@@ -267,8 +269,14 @@ class ValueResearchService:
             old = record['payload']
             if report and old['snapshot_id']==report['snapshot_id'] and old['assumptions_revision']==report['assumptions_revision']:
                 continue
-            history.append({k:old.get(k) for k in ('snapshot_id','assumptions_revision','generated_at','primary_method','valuation_cases')})
-        return dict(code=code, status=status, snapshot=snapshot, report=report, assumptions=assumptions,
+            history.append({k:old.get(k) for k in ('snapshot_id','assumptions_revision','generated_at','primary_method','valuation_cases','valuation_state','parameter_origin')})
+        reference=None
+        if snapshot and not reasons and not report and status=='ready' and review and review.get('status')=='partial':
+            from src.services.a_share_value_reference import build_value_reference
+            reference=build_value_reference(snapshot)
+            if reference['state']=='ready':
+                progress=progress|dict(message='AI完整估值未形成；已提供可编辑参数试算，不额外调用模型')
+        return dict(code=code, status=status, snapshot=snapshot, report=report, assumptions=assumptions,reference=reference,
             review=review, historical_review=historical_review, history=history, stale_reasons=reasons, progress=progress,
             data_task={k: data_task[k] for k in ('id', 'state', 'error')} if data_task else None,
             task={k: task[k] for k in ('id', 'state', 'error')} if task else None,

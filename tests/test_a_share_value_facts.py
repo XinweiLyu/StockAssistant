@@ -18,6 +18,16 @@ def test_cash_zero_and_missing_are_distinct():
     assert facts[0]['available_at'] == NOW
 
 
+def test_value_inputs_preserve_reported_interest_leases_and_depreciation_components():
+    rows=[('eastmoney/stock_profit_sheet_by_report_em',row(FE_INTEREST_EXPENSE=68,FE_INTEREST_INCOME=278),{'interest_expense':68,'interest_income':278}),
+        ('eastmoney/stock_balance_sheet_by_report_em',row(LEASE_LIAB=383,FIXED_ASSET=6738,CIP=870,USERIGHT_ASSET=364,LONG_LOAN=None),{'lease_liabilities':383,'fixed_assets':6738,'construction_in_progress':870,'right_of_use_assets':364}),
+        ('eastmoney/stock_cash_flow_sheet_by_report_em',row(FA_IR_DEPR=426,OILGAS_BIOLOGY_DEPR=426,IA_AMORTIZE=23,LPE_AMORTIZE=17,USERIGHT_ASSET_AMORTIZE=28),{'depreciation':426,'intangible_amortization':23,'prepaid_amortization':17,'right_of_use_depreciation':28})]
+    for source,data,expected in rows:
+        facts=normalize_value_statements('000807',[data],source,NOW)
+        assert {f['metric']:f['value'] for f in facts}==expected
+        assert all(f['unit']=='CNY' for f in facts)
+
+
 @pytest.mark.parametrize('value', [float('nan'), float('inf'), True, 'bad'])
 def test_invalid_amounts_do_not_become_facts(value):
     assert not normalize_value_statements('000807', [row(MONETARYFUNDS=value)],

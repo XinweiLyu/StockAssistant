@@ -36,6 +36,12 @@ def report_period(title):
     return f'{year[1]}-{suffix}' if suffix else None
 
 
+def full_report_kind(title):
+    """Exclude summaries, roadshows and letters merely mentioning a report."""
+    match=re.search(r'20\d{2}年(年度|半年度|第[一二三四]季度)报告(?:[（(][^）)]*[）)])?$',re.sub(r'\s+','',title))
+    return ('annual' if match[1]=='年度' else 'interim') if match else None
+
+
 def normalize_disclosures(code, rows, observed_at):
     output, seen = [], set()
     for row in rows:
@@ -72,7 +78,7 @@ def normalize_disclosures(code, rows, observed_at):
     return sorted(output, key=lambda e: e['published_at'], reverse=True)
 
 
-def extract_pdf_bytes(data, max_bytes=8388608, max_pages=80):
+def extract_pdf_bytes(data, max_bytes=8388608, max_pages=600):
     if len(data) > max_bytes or not data.startswith(b'%PDF-'):
         return dict(status='failed', text='', reason='非PDF或超过公告大小上限')
     worker = """
@@ -86,20 +92,20 @@ else:
  parts=[]
  for page in r.pages:
   parts.append((page.extract_text() or '')[:30000])
-  if sum(map(len,parts))>200000: break
- text='\\n'.join(parts)[:200000]
+  if sum(map(len,parts))>800000: break
+ text='\\n'.join(parts)[:800000]
  print(json.dumps({'status':'ready' if text.strip() else 'missing','text':text,'pages':count,
- 'truncated':len(text)>=200000,'reason':'' if text.strip() else 'PDF无可提取文本，可能为扫描件'},ensure_ascii=False))
+ 'truncated':len(text)>=800000,'reason':'' if text.strip() else 'PDF无可提取文本，可能为扫描件'},ensure_ascii=False))
 """
     try:
         result = subprocess.run([sys.executable, '-c', worker, str(max_pages)], input=data,
-                                capture_output=True, check=True, timeout=15)
+                                capture_output=True, check=True, timeout=45)
         return json.loads(result.stdout)
     except (subprocess.SubprocessError, ValueError):
         return dict(status='failed', text='', reason='PDF解析未完成或超时')
 
 
-def fetch_disclosure_text(url, published_day=None, max_bytes=8388608, max_pages=80):
+def fetch_disclosure_text(url, published_day=None, max_bytes=8388608, max_pages=600):
     import requests
     try:
         target = disclosure_pdf_url(url, published_day)

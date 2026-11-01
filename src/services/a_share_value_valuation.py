@@ -58,7 +58,13 @@ def evaluate_method(method, case, financial_view, eligibility):
         if eligibility.get('allowed_methods') is not None and method not in eligibility['allowed_methods']:
             raise ValueError('该经济模型不适用'+method+'；请先核实主营或选用适配方法')
         shares = required(case, 'shares', 1e-12)
-        if case.get('fixed_capital') is not True or case.get('capital_changes'):
+        capital_bridge=case.get('capital_bridge')
+        if method=='ddm' and financial_view.get('latest',{}).get('treasury_share_cost',{}).get('value',0)>0:
+            if not isinstance(capital_bridge,dict) or required(capital_bridge,'initial_treasury_shares',0)<=0:
+                raise ValueError('已知存在库存股，须取得库存股数并桥接有权分红股数，不能直接用全部已发行股数')
+        if capital_bridge and (method!='ddm' or case.get('fixed_capital') is not False or case.get('capital_changes')):
+            raise ValueError('动态资本桥接仅支持DDM，须明确非固定股本且不混入第二套资本路径')
+        if not capital_bridge and (case.get('fixed_capital') is not True or case.get('capital_changes')):
             raise ValueError('须核实固定普通股资本；融资增发/回购/重组需完整桥接')
         if method == 'nav':
             if case.get('complete') is not True:
@@ -102,8 +108,15 @@ def evaluate_method(method, case, financial_view, eligibility):
             flows = case.get('dividends', [])
             if len(flows) != 5 or case.get('capital_feasible') is not True:
                 raise ValueError('DDM需5年股利及盈利/资本可持续依据')
-            flows = [number(v, 'dividend', 0) for v in flows]
-            terminal = required(case, 'terminal_dividend', 0)/(r-g)
+            if capital_bridge:
+                from src.services.a_share_value_capital import project_dividend_capital
+                bridge=project_dividend_capital(case,required)
+                flows=bridge['flows'];shares=bridge['initial_dividend_shares']
+                terminal=bridge['terminal_flow']/(r-g)
+                result['capital_bridge']=bridge
+            else:
+                flows = [number(v, 'dividend', 0) for v in flows]
+                terminal = required(case, 'terminal_dividend', 0)/(r-g)
         elif method == 'rim':
             book = required(case, 'book_equity', 1e-12)
             adjustment = book
@@ -181,6 +194,9 @@ def evaluate_value(assumptions, snapshot):
     ids = {f['fact_id'] for f in s['facts']} | {e['id'] for e in s['evidence'] if e.get('id')}
     refs_ok = all(c.get('evidence_ids') and set(c['evidence_ids']) <= ids for c in a['cases']) and all(
         set(a['risk_review'].get(k, {}).get('sources', [])) <= ids for k in required_reviews)
+    refs_ok=refs_ok and all(not c.get('capital_bridge') or isinstance(c['capital_bridge'],dict) and bool(c['capital_bridge'].get('sources'))
+        and isinstance(c['capital_bridge']['sources'],list) and all(isinstance(x,str) for x in c['capital_bridge']['sources'])
+        and set(c['capital_bridge']['sources'])<=ids for c in a['cases'])
     capital = s['financial_view'].get('current_capital') or {}
     quote = s['binding'].get('quote', {})
     fresh_capital = capital.get('available_at', '')[:10] == s['cutoff'][:10] and capital.get('period', '') >= (quote.get('trade_date') or s['cutoff'][:10])
@@ -195,8 +211,15 @@ def evaluate_value(assumptions, snapshot):
         missing.append('缺少与报价日期一致的当前总股本，或三情景股数与核实资本不一致')
     if complete and state not in ('disputed', 'research_only') and a['confirmed'] and reviewed and refs_ok and capital_matches and cycle['ready'] and eligibility.get('eligible') and not s['financial_view'].get('conflicts'):
         state = 'conditional'
+    reference=any(c.get('parameter_origin')=='reference_sensitivity_v1' or (isinstance(c.get('capital_bridge'),dict)
+        and c['capital_bridge'].get('basis')=='reference_sensitivity') for c in a['cases'])
+    if reference and complete and state!='disputed':
+        state='reference'
+        missing.append('规则参数敏感性试算，非AI完整估值，不发布条件安全价或收益判断')
     value = primary.get('conservative', {}).get('value_per_share')
     comparison = compare_price(value, s['binding'].get('quote', {}), a['margin_required'], dict(eligible=state == 'conditional'))
+    if reference:
+        comparison.update(margin=None,upside=None,conditional_price=None,reason='参考试算不作当前价格吸引力或安全买入价判断')
     sensitivities = []
     base_case = next((c for c in a['cases'] if c.get('method') == a['primary_method'] and c.get('scenario') == 'conservative'), None)
     if base_case:
@@ -222,6 +245,7 @@ def evaluate_value(assumptions, snapshot):
             stress = evaluate_method(case.get('method'), case, s['financial_view'], {})
             sensitivities.append(dict(label=label, value=stress.get('value_per_share'), missing=stress.get('missing', []), note='显式机械压力，不是概率'))
     return ValueReport(code=a['code'], snapshot_id=s['snapshot_id'], assumptions_revision=a['revision'],
+        parameter_origin='reference_sensitivity_v1' if reference else None,
         generated_at=s['cutoff'], valuation_state=state, primary_method=a['primary_method'], valuation_cases=results,
         comparison=comparison, quality=s['financial_view'].get('quality', {}), peers=s['peers'], theses=a['theses'],
         risks=s['economic_model'].get('checklist', []), missing=list(dict.fromkeys(s['missing']+missing)),

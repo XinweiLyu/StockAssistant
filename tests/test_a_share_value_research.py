@@ -118,3 +118,41 @@ def test_delivery_keeps_quote_dividends_capital_notes_and_older_annuals_when_eve
     assert {'QUOTE','DIVIDEND','REPORT'} <= delivered.keys()
     assert '734199310' in json.dumps(delivered['REPORT'],ensure_ascii=False)
     assert any(f['report_period']=='2021-12-31' and f['fact_id'] in result['sent_ids'] for f in s['facts'])
+
+
+def test_value_delivery_includes_latest_full_annual_notes_and_peer_context(tmp_path):
+    import json
+    from src.services.a_share_value_research import build_value_payload
+    svc=value_service(tmp_path);s=svc.value.capture('600034')
+    annual='目录：审计意见、货币资金。\n'+'无关正文\n'*3000+'审计意见\n我们认为，上述报表公允反映财务状况。\n所有权或使用权受限资产\n受限货币资金为168万元。'
+    s['events']=[dict(id='Q3',title='2026年第三季度报告',kind='earnings',published_at='2026-10-30',text_status='ready',text='最新三季报'),dict(id='ANNUAL',title='2025年年度报告',kind='earnings',published_at='2026-03-31',text_status='ready',text=annual)]
+    s['evidence'] += [dict(id=e['id'],source='cninfo',content=json.dumps(e,ensure_ascii=False)[:6000]) for e in s['events']]
+    s['evidence'].append(dict(id='VALUE_PEERS',source='同行候选资料',content=json.dumps({'candidates':[{'code':'600001','metrics':{'pe':20}}],'confirmed':[]})))
+    p,sent,_=build_value_payload(s)
+    delivered={e['id']:e for e in p['evidence']}
+    assert {'Q3','ANNUAL','VALUE_PEERS'}<=sent
+    text=json.dumps(delivered['ANNUAL'],ensure_ascii=False)
+    assert '168万元' in text and '公允反映' in text
+    assert 'candidates' in json.dumps(delivered['VALUE_PEERS'])
+
+
+def test_heavy_current_statements_do_not_displace_annual_current_capital_or_peers(tmp_path):
+    import json
+    from data_provider.a_share_value_facts import CONTRACTS,normalize_value_statements
+    from src.services.a_share_value_research import build_value_payload,PROMPT
+    svc=value_service(tmp_path);s=svc.value.capture('600034')
+    for source,(mapping,index) in CONTRACTS.items():
+        if index: continue
+        for period in ('2025-12-31','2026-09-30'):
+            data=dict(SECUCODE='600034.SH',REPORT_DATE=period,NOTICE_DATE='2026-10-20')
+            data.update({aliases[0]:float(i+100) for i,aliases in enumerate(mapping.values())})
+            s['facts']+=normalize_value_statements('600034',[data],source,s['cutoff'])
+    s['evidence']=[dict(id=f['fact_id'],source=f['source'],content=json.dumps(f,ensure_ascii=False)) for f in s['facts']]
+    text='我们认为，报表公允反映公司财务状况。所有权或使用权受限资产。'+'审计现金资金数据。'*600
+    s['events']=[dict(id=i,title=t,published_at=d,text_status='ready',text=text,kind='earnings') for i,t,d in [('ANNUAL','2025年年度报告','2026-03-31'),('Q3','2026年第三季度报告','2026-10-30'),('HALF','2026年半年度报告','2026-08-30'),('CAP','股份回购进展公告','2026-10-10')]]
+    s['evidence'] += [dict(id=e['id'],source='cninfo',content=json.dumps(e)) for e in s['events']]
+    s['evidence'] += [dict(id=f'DIV{i}',source='eastmoney/stock_fhps_detail_em',content=json.dumps(dict(report_period=f'202{i}-12-31',cash_per_share=2.5,description='详细历史分配资料'*200))) for i in range(9)]
+    s['evidence'].append(dict(id='VALUE_PEERS',source='同行候选资料',content=json.dumps(dict(candidates=[dict(code=f'60000{i}',metrics=dict(pe=20,pb=2),metric_basis={}) for i in range(7)],confirmed=[]))))
+    p,sent,_=build_value_payload(s)
+    assert {'ANNUAL','Q3','HALF','CAP','VALUE_PEERS'}<=sent
+    assert len(json.dumps([dict(role='system',content=PROMPT),dict(role='user',content=json.dumps(p,ensure_ascii=False))],ensure_ascii=False).encode())<=48000

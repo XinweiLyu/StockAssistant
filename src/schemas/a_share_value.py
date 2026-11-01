@@ -2,7 +2,7 @@
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, field_validator, model_validator
 
-VERSION = 'value-research-v2'
+VERSION = 'value-research-v3'
 
 
 class ValueModel(BaseModel):
@@ -109,6 +109,7 @@ class ValueReport(ValueModel):
     assumptions_revision: int
     version: str = VERSION
     valuation_state: str
+    parameter_origin: Literal['reference_sensitivity_v1'] | None = None
     generated_at: str
     primary_method: str
     valuation_cases: list[dict] = Field(default_factory=list)

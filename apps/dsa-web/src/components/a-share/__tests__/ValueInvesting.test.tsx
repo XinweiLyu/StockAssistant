@@ -6,8 +6,42 @@ import {aShareMarketApi} from '../../../api/aShareMarket';
 import type {ValueResearchResult} from '../../../types/aShareValue';
 import type {ValueSnapshot} from '../../../types/aShareValue';
 import ValueAssumptionEditor from '../ValueAssumptionEditor';
+import type {ValueAssumptions} from '../../../types/aShareValue';
 vi.mock('../../../api/aShareMarket',()=>({aShareMarketApi:{getValue:vi.fn(),prepareValue:vi.fn(),generateValue:vi.fn()}}));
 beforeEach(()=>vi.clearAllMocks());
+
+it('shows a numerical reference clearly separated from the incomplete AI valuation',()=>{
+ const peers={candidates:[],confirmed:[],excluded:[],metrics:{}};
+ const result={code:'605499',status:'ready',snapshot:{code:'605499',snapshot_id:'s',cutoff:'2026-11-01',economic_model:{model:'operating',checklist:[],allowed_methods:['ddm']},facts:[],events:[],evidence:[],missing:[],peers,financial_view:{latest:{},ttm:{},annual:[],quality:{risks:[]},conflicts:[]}},review:{status:'partial',missing:['AI尚缺完整资本核验']},reference:{state:'ready',label:'可编辑的股利参数试算，不是AI完整估值',limitations:['参数不是已验证预测'],parameters:[],report:{valuation_state:'reference',primary_method:'ddm',valuation_cases:['conservative','base','upside'].map(scenario=>({method:'ddm',scenario,state:'ready',value_per_share:12,missing:[]})),comparison:{conditional_price:null},peers,theses:[],missing:[],sensitivities:[],driver_effects:[],holding_cases:[]}}} as unknown as ValueResearchResult;
+ const {rerender}=render(<ValueInvestingPanel code="605499" state={{result,loading:false,busy:false} as ReturnType<typeof useValueResearch>} onRequestResearch={()=>undefined}/>);
+ expect(screen.getByText('可编辑的股利参数试算，不是AI完整估值')).toBeInTheDocument();
+ expect(screen.getAllByText('¥12.00')).toHaveLength(3);
+ expect(screen.getByText('参数不是已验证预测')).toBeInTheDocument();
+ expect(screen.getByText('AI尚缺完整资本核验')).toBeInTheDocument();
+ expect(screen.getByText('暂停发布')).toBeInTheDocument();
+ result.report={...result.reference!.report!,valuation_state:'stale',parameter_origin:'reference_sensitivity_v1'};
+ result.reference=null;
+ result.history=[{snapshot_id:'old',assumptions_revision:1,generated_at:'2026-10-30',primary_method:'ddm',parameter_origin:'reference_sensitivity_v1',valuation_cases:[]}];
+ rerender(<ValueInvestingPanel code="605499" state={{result,loading:false,busy:false} as ReturnType<typeof useValueResearch>} onRequestResearch={()=>undefined}/>);
+ expect(screen.getByText('历史参数试算，资料已变化')).toBeInTheDocument();
+ expect(screen.queryByText('保守价值',{exact:true})).not.toBeInTheDocument();
+ expect(screen.getByText(/历史参数试算（非AI估值）/)).toBeInTheDocument();
+});
+
+it('allows review and editing of a proposed dividend share and cash bridge without calling AI',async()=>{
+ const snapshot={code:'605499',snapshot_id:'s',economic_model:{allowed_methods:['ddm']},evidence:[{id:'F1',source:'原文'}],events:[],peers:{candidates:[]}} as unknown as ValueSnapshot;
+ const assumptions={code:'605499',snapshot_id:'s',primary_method:'ddm',cases:[{method:'ddm',scenario:'conservative',shares:10,fixed_capital:false,dividends:[8,8,8,8,8],capital_bridge:{basis:'model_proposal',sources:['F1'],rationale:'资本情景',timing:'actions_before_dividend',initial_treasury_shares:1,years:[{repurchased_shares:1}]} }],risk_review:{},peer_confirmations:[],driver_changes:[],holding_cases:[],theses:[]} as unknown as ValueAssumptions;
+ const save=vi.fn().mockResolvedValue({});
+ render(<ValueAssumptionEditor snapshot={snapshot} assumptions={assumptions} busy={false} onSave={save}/>);
+ expect(screen.getByLabelText('保守·初始库存股数')).toHaveValue(1);
+ fireEvent.change(screen.getByLabelText('保守·第1年回购股数'),{target:{value:'2'}});
+ fireEvent.click(screen.getByRole('button',{name:'保存草案（不调用AI）'}));
+ await waitFor(()=>expect(save).toHaveBeenCalledOnce());
+ expect(save.mock.calls[0][0].cases[0].capital_bridge.years[0].repurchased_shares).toBe(2);
+ expect(save.mock.calls[0][0].cases[0].capital_bridge.sources).toEqual(['F1']);
+ expect(save.mock.calls[0][1]).toBe(false);
+ expect(aShareMarketApi.generateValue).not.toHaveBeenCalled();
+});
 
 it('shows concrete missing sources and returns to the unified research control',()=>{
  const action=vi.fn();

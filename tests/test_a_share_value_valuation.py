@@ -84,3 +84,69 @@ def test_missing_quote_date_does_not_break_a_current_capital_valuation():
     s=dict(code='000807',name='样本',snapshot_id='s',cutoff='2026-10-30T10:00:00+08:00',
            binding={'quote':{'trade_date':None}},financial_view={'current_capital':{'value':10,'period':'2026-10-30','available_at':'2026-10-30T10:00:00+08:00'}})
     assert evaluate_value(a,s)['comparison']['conditional_price'] is None
+
+
+def dividend_capital_case():
+    row=dict(new_shares=0,issuance_cash=0,repurchased_shares=0,repurchase_cash=0,cancelled_shares=0,
+        treasury_reissued_shares=0,treasury_reissue_cash=0,operating_cashflow=8,capex=0,net_debt_financing=0,earnings=10,financing_cash_costs=0,minority_distributions=0)
+    years=[deepcopy(row) for _ in range(5)]
+    years[0].update(repurchased_shares=1,repurchase_cash=2)
+    years[1]['cancelled_shares']=1
+    return dict(method='ddm',scenario='base',shares=10,fixed_capital=False,discount=.1,terminal_growth=0,
+        dividends=[8]*5,terminal_dividend=8,capital_feasible=True,
+        evidence_ids=['F1'],capital_bridge=dict(basis='model_proposal',sources=['F1'],rationale='有来源的假设路径，非已知未来',
+            timing='actions_before_dividend',initial_treasury_shares=1,opening_available_cash=20,minimum_cash=1,
+            terminal_capital_stable=True,terminal_earnings=10,terminal_operating_cashflow=8,terminal_capex=0,terminal_financing_cash_costs=0,terminal_minority_distributions=0,years=years))
+
+
+def test_dividend_valuation_bridges_buybacks_treasury_cancellation_and_cash():
+    result=evaluate_method('ddm',dividend_capital_case(),{}, {})
+    assert result['state']=='ready'
+    assert result['value_per_share']==pytest.approx(10)
+    assert result['shares']==9
+    assert result['capital_bridge']['years'][0]['dividend_shares']==8
+    assert result['capital_bridge']['years'][1]['issued_shares']==9
+    assert result['capital_bridge']['years'][1]['treasury_shares']==1
+    assert result['capital_bridge']['years'][0]['ending_cash']==18
+
+
+@pytest.mark.parametrize('change',['cash','cancellation','terminal','references'])
+def test_dividend_capital_bridge_blocks_unfunded_or_unreconciled_scenarios(change):
+    case=dividend_capital_case();b=case['capital_bridge']
+    if change=='cash': b['opening_available_cash']=0;b['years'][0]['operating_cashflow']=0
+    elif change=='cancellation': b['years'][0]['cancelled_shares']=3
+    elif change=='terminal': b['terminal_capital_stable']=False
+    else: b['sources']=[]
+    assert evaluate_method('ddm',case,{}, {})['state']=='blocked'
+
+
+@pytest.mark.parametrize('bridge',[1,[1],{'basis':'model_proposal','sources':[None]},None])
+def test_malformed_dynamic_capital_is_a_blocked_case_not_a_server_error(bridge):
+    case=dividend_capital_case()|dict(capital_bridge=bridge)
+    assert evaluate_method('ddm',case,{}, {})['state']=='blocked'
+
+
+def test_dividend_funding_deducts_financing_costs_and_minority_cash_claims():
+    case=dividend_capital_case()
+    case['capital_bridge']['years'][0].update(financing_cash_costs=1,minority_distributions=1)
+    result=evaluate_method('ddm',case,{}, {})
+    assert result['capital_bridge']['years'][0]['ending_cash']==16
+
+
+def test_known_treasury_stock_cannot_use_all_issued_shares_as_static_dividend_denominator():
+    case=dict(method='ddm',shares=10,fixed_capital=True,discount=.1,terminal_growth=0,dividends=[10]*5,terminal_dividend=10,capital_feasible=True)
+    view={'latest':{'treasury_share_cost':{'value':2}}}
+    assert evaluate_method('ddm',case,view,{})['state']=='blocked'
+
+
+def test_cash_constraint_does_not_reject_exact_cent_amounts_due_to_binary_rounding():
+    case=dividend_capital_case();b=case['capital_bridge'];case['dividends']=[.3]*5
+    b.update(opening_available_cash=0,minimum_cash=.16)
+    for y in b['years']:y.update(operating_cashflow=1.01,capex=.33,financing_cash_costs=.22,repurchased_shares=0,repurchase_cash=0,cancelled_shares=0,earnings=1)
+    assert evaluate_method('ddm',case,{}, {})['state']=='ready'
+
+
+def test_terminal_cash_constraint_uses_the_same_exact_cent_ledger():
+    case=dividend_capital_case();case['terminal_dividend']=.1
+    case['capital_bridge'].update(terminal_operating_cashflow=.3,terminal_capex=.1,terminal_financing_cash_costs=.1,terminal_minority_distributions=0)
+    assert evaluate_method('ddm',case,{}, {})['state']=='ready'

@@ -84,6 +84,18 @@ def test_pdf_text_is_extracted_in_bounded_worker():
     assert result['text'] == ''
 
 
+def test_normal_annual_report_length_is_not_rejected_as_an_oversized_document():
+    from pypdf import PdfWriter
+    from io import BytesIO
+    writer=PdfWriter()
+    for _ in range(243): writer.add_blank_page(width=100,height=100)
+    stream=BytesIO();writer.write(stream)
+    result=extract_pdf_bytes(stream.getvalue())
+    assert result['status']=='missing'
+    assert result['pages']==243
+    assert extract_pdf_bytes(stream.getvalue(),max_pages=80)['status']=='failed'
+
+
 def test_paid_failure_respects_fallback_and_retains_partial_free_tables():
     class Provider:
         def call(self, name, params=None, tushare=False):

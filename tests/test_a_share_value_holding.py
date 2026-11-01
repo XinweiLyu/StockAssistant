@@ -32,3 +32,14 @@ def test_missing_realization_factor_never_implies_convergence():
                 fixed_capital=True, capital_feasible=True, terminal_dividend=10, price=8)
     result = evaluate_holding(case, evaluate_method('ddm', case, {}, {}), '2026-10-30', 6)
     assert result['state'] == 'insufficient'
+
+
+def test_dividend_holding_uses_the_same_changing_share_denominators():
+    from tests.test_a_share_value_valuation import dividend_capital_case
+    case=dividend_capital_case()|dict(start_date='2026-10-30')
+    valuation=evaluate_method('ddm',case,{}, {})
+    held=evaluate_holding(case|dict(price=8,realization_factor=1),valuation,'2026-10-30',12)
+    assert held['state']=='ready'
+    assert held['dividends']==pytest.approx(1)
+    t=held['year_fraction']
+    assert valuation['value_per_share']==pytest.approx((1+held['intrinsic_value'])/(1.1)**t)
