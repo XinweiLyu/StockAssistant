@@ -14,6 +14,15 @@ INCOME = {
     'interest_expense': ('FE_INTEREST_EXPENSE', None),
     'interest_income': ('FE_INTEREST_INCOME', None),
     'finance_expense': ('FINANCE_EXPENSE', None),
+    'total_net_profit': ('NETPROFIT', 'n_income'),
+    'adjusted_net_profit': ('DEDUCT_PARENT_NETPROFIT', None),
+    'operating_cost': ('OPERATE_COST', None),
+    'selling_expense': ('SALE_EXPENSE', None),
+    'management_expense': ('MANAGE_EXPENSE', None),
+    'investment_income': ('INVEST_INCOME', None),
+    'fair_value_income': ('FAIRVALUE_CHANGE_INCOME', None),
+    'asset_disposal_income': ('ASSET_DISPOSAL_INCOME', None),
+    'other_income': ('OTHER_INCOME', None),
 }
 BALANCE = {
     'cash': ('MONETARYFUNDS', 'money_cap'), 'assets': ('TOTAL_ASSETS', 'total_assets'),
@@ -31,6 +40,11 @@ BALANCE = {
     'noncurrent_due_within_year': ('NONCURRENT_LIAB_1YEAR', None),
     'trading_financial_assets': ('TRADE_FINASSET_NOTFVTPL', None),
     'treasury_share_cost': ('TREASURY_SHARES', None),
+    'contract_liabilities': ('CONTRACT_LIAB', None),
+    'goodwill': ('GOODWILL', None),
+    'development_assets': ('DEVELOP_EXPENSE', None),
+    'current_assets': ('TOTAL_CURRENT_ASSETS', None),
+    'current_liabilities': ('TOTAL_CURRENT_LIAB', None),
 }
 CASHFLOW = {
     'operating_cashflow': ('NETCASH_OPERATE', 'n_cashflow_act'),
@@ -91,7 +105,7 @@ def normalize_value_statements(code, rows, source, observed_at):
             payload = dict(code=code, metric=metric, value=value, unit='shares' if metric == 'shares' else 'CNY',
                 report_period=end, period_end=end, period_start=None if instant else end[:4]+'-01-01' if not quarter else None,
                 period_basis=basis, scope=scope,
-                attribution='parent_common' if metric in ('net_profit', 'parent_equity', 'shares') else
+                attribution='parent_common' if metric in ('net_profit', 'adjusted_net_profit', 'parent_equity', 'shares') else
                             'minority' if metric == 'minority_equity' else 'all_claims',
                 source=source, raw_field=raw, published_at=published, revised_at=revised, observed_at=observed,
                 available_at=max(filter(None, [observed, published, revised])),

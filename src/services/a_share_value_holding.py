@@ -32,7 +32,9 @@ def evaluate_holding(case, valuation, start_date, months):
             raise ValueError('当下估值尚未通过数学与适用性检查')
         k = required(case, 'realization_factor', 0, 5)
         initial = required(case, 'price', 1e-12)
-        r, shares = required(case, 'discount', .0001, 1), required(valuation if valuation.get('capital_bridge') else case, 'shares', 1e-12)
+        r, shares = required(case, 'discount', .0001, 1), required(valuation, 'shares', 1e-12)
+        if case.get('start_date') and case['start_date'][:10]!=start_date[:10]:
+            raise ValueError('持有期与当下价值须使用同一估值起点')
         end = add_months(start_date, months)
         t = (date.fromisoformat(end)-date.fromisoformat(start_date[:10])).days/365.25
         schedule = cashflow_schedule(case, start_date)

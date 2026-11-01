@@ -1,5 +1,5 @@
 import {useState} from 'react';
-import type {ValueAssumptions,ValueMethod,ValueSnapshot} from '../../types/aShareValue';
+import type {ValueAssumptions,ValueMethod,ValueSnapshot,ValueStrategy,ValueMonitorRule} from '../../types/aShareValue';
 
 import {methodNames} from './valueLabels';
 const scenarios={conservative:'保守',base:'基准',upside:'有利'} as const;
@@ -14,10 +14,10 @@ function initial(snapshot:ValueSnapshot,assumptions?:ValueAssumptions|null):Valu
  return {code:snapshot.code,snapshot_id:snapshot.snapshot_id,revision:0,confirmed:false,primary_method:method,
   cases:(Object.keys(scenarios) as (keyof typeof scenarios)[]).map(scenario=>({method,scenario,shares,fixed_capital:false,
    rationale:'用户预测假设，须与原文及经营计划核对',evidence_ids:[],operating:{revenue0:revenue,years:Array.from({length:5},()=>({})),terminal:{}},nonoperating:{treatment:'separate'}})),
-  peer_confirmations:[],driver_changes:[],holding_cases:[],theses:[],risk_review:{}};
+  peer_confirmations:[],driver_changes:[],holding_cases:[],theses:[],risk_review:{},monitor_rules:assumptions?.monitor_rules||[],forecast_observations:assumptions?.forecast_observations||[]};
 }
 function at(obj:unknown,path:(string|number)[]):unknown{return path.reduce<unknown>((v,k)=>v!=null&&typeof v==='object'?(v as Record<string|number,unknown>)[k]:undefined,obj);}
-export default function ValueAssumptionEditor({snapshot,assumptions,busy,onSave}:{snapshot:ValueSnapshot;assumptions?:ValueAssumptions|null;busy:boolean;onSave:(a:ValueAssumptions,confirmed:boolean)=>Promise<unknown>}){
+export default function ValueAssumptionEditor({snapshot,assumptions,busy,onSave,strategy}:{snapshot:ValueSnapshot;assumptions?:ValueAssumptions|null;busy:boolean;onSave:(a:ValueAssumptions,confirmed:boolean)=>Promise<unknown>;strategy?:ValueStrategy}){
  const [draft,setDraft]=useState(()=>initial(snapshot,assumptions)),[error,setError]=useState(''),[dirty,setDirty]=useState(false);
  const [eventChange,setEventChange]=useState<Record<string,unknown>>({field:'ebit_margin',scenario:'base',years:[1,2,3],half_life_years:1});
  const method=draft.primary_method;
@@ -32,18 +32,31 @@ export default function ValueAssumptionEditor({snapshot,assumptions,busy,onSave}
   const value=at(draft.cases[i],path);return <label key={path.join('.')} className="am-value-input">{label}<input aria-label={`${scenarios[draft.cases[i].scenario]}·${label}`} type="number" step="any" value={typeof value==='number'?Number((value*(percent?100:1)).toFixed(8)):''} onChange={e=>set(i,path,e.target.value===''?undefined:Number(e.target.value)/(percent?100:1))}/></label>;
  };
  const basis=draft.cases[0]?.evidence_ids?.[0]||'';
+ const monitorNames:Record<string,string>={revenue:'收入',net_profit:'归母利润',operating_cashflow:'经营现金流',capex:'总资本开支',roe:'平均权益ROE',operating_margin:'报表营业利润率',cash_conversion:'合并现金转化率',roic_proxy:'资本回报代理',cash_surplus_proxy:'经营现金减总投资代理'};
+ const moneyMetrics=['revenue','net_profit','operating_cashflow','capex','cash_surplus_proxy'];
+ const updateRule=(index:number,patch:Partial<ValueMonitorRule>)=>{setDirty(true);setDraft(a=>({...a,monitor_rules:(a.monitor_rules||[]).map((r,i)=>i===index?{...r,...patch}:r)}));};
+ const recordProjection=()=>{
+  const p=strategy?.company_drivers.projections.find(p=>p.scenario==='base')?.years[0];if(!p)return;
+  const known=new Set(snapshot.evidence.map(e=>e.id));
+  const growthSources=snapshot.financial_view.annual.slice(-6).flatMap(y=>y.metrics.revenue?.fact_ids||[]);
+  const observations=(['revenue','net_profit','operating_cashflow','capex'] as const).map(metric=>({metric,period:p.period,value:p[metric],unit:'CNY' as const,basis:'ttm' as const,
+   sources:[...new Set([...(snapshot.financial_view.ttm[metric]?.fact_ids||[]),...growthSources])].filter(id=>known.has(id)),
+   origin:'company_history' as const,rationale:'用户选择的公司历史锚点投影，保持当前利润/现金/投资率；未来经营仍须核对'}));
+  if(observations.some(o=>!o.sources.length)){setError('历史投影缺少可保存的底层来源，请先更新研究资料。');return;}
+  setDirty(true);setDraft(a=>({...a,forecast_observations:[...(a.forecast_observations||[]).filter(o=>!observations.some(n=>n.metric===o.metric&&n.period===o.period)),...observations]}));
+ };
  const save=async(confirmed:boolean)=>{setError('');try{await onSave({...draft,confirmed},confirmed);setDirty(false);}catch{setError('保存或计算失败：请查看上方字段/版本提示，核对后再提交；不会自动调用模型。');}};
  const setPrimary=(method:ValueMethod)=>{setDirty(true);setDraft(a=>({...a,primary_method:method,cases:(Object.keys(scenarios) as (keyof typeof scenarios)[]).map(scenario=>({...a.cases.find(c=>c.scenario===scenario),method,scenario}))}));};
  return <fieldset disabled={busy} className="am-value-editor">
   <p>预测参数属于假设。空白表示未填写，不能用0代替未知。金额为人民币元，总股数为股；下表所有百分比按“10”表示10%。</p>
   <div className="am-value-form-grid"><label>主估值方法<select aria-label="主估值方法" value={method} onChange={e=>setPrimary(e.target.value as ValueMethod)}>{Object.entries(methodNames).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></label>
    <label>要求安全边际 %<input aria-label="要求安全边际" type="number" min="0" max="80" value={draft.margin_required==null?'':draft.margin_required*100} onChange={e=>{setDirty(true);setDraft(a=>({...a,margin_required:e.target.value===''?null:Number(e.target.value)/100}));}}/></label>
-   <label>假设的基础资料<select aria-label="假设的基础资料" value={basis} onChange={e=>{const id=e.target.value;setDirty(true);setDraft(a=>({...a,cases:a.cases.map(c=>({...c,evidence_ids:id?[id]:[]})),economic_model_override:a.economic_model_override?{...a.economic_model_override,evidence_ids:id?[id]:[]}:null}));}}><option value="">选择已取得的原始资料</option>{snapshot.evidence.map(e=><option key={e.id} value={e.id}>{e.id} · {e.source}</option>)}</select></label></div>
+   <label>假设的基础资料<select aria-label="假设的基础资料" value={basis} onChange={e=>{const id=e.target.value;setDirty(true);setDraft(a=>({...a,cases:a.cases.map(c=>({...c,evidence_ids:id?[id]:[]})),economic_model_override:a.economic_model_override?{...a.economic_model_override,evidence_ids:id?[id]:[]}:null}));}}><option value="">选择已取得的原始资料</option>{snapshot.evidence.filter(e=>e.id!=='VALUE_STRATEGY').map(e=><option key={e.id} value={e.id}>{e.id} · {e.source}</option>)}</select></label></div>
   <details className="am-evidence"><summary>人工核对主营与经济模型</summary><p>行业目录只能初步分类。修正必须有主营原文依据及理由；记录会明确保留为人工判断。</p><label>人工核对经济模型<select aria-label="人工核对经济模型" value={draft.economic_model_override?.model||''} onChange={e=>{setDirty(true);setDraft(a=>({...a,economic_model_override:e.target.value?{model:e.target.value,reason:a.economic_model_override?.reason||'',evidence_ids:basis?[basis]:[]}:null}));}}><option value="">沿用行业识别</option>{Object.entries(modelNames).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></label><label>主营判断依据<textarea aria-label="主营判断依据" value={draft.economic_model_override?.reason||''} onChange={e=>{setDirty(true);setDraft(a=>({...a,economic_model_override:{model:a.economic_model_override?.model||'operating',reason:e.target.value,evidence_ids:basis?[basis]:[]}}));}}/></label></details>
   {!snapshot.economic_model.allowed_methods.includes(method)&&<p className="am-integrated-warning">当前行业不适用所选方法或主营待识别；计算器会保留缺口。请补齐行业/业务依据，不能仅换一个方法绕过门槛。</p>}
   {draft.cases.filter(c=>c.method===method).map((c,i)=><fieldset key={c.scenario}><legend>{scenarios[c.scenario]}情景</legend>
    <div className="am-value-form-grid">{input(i,['discount'],'折现率 %',true)}{method!=='rim'&&method!=='nav'&&input(i,['terminal_growth'],'稳定期增长 %',true)}{input(i,['shares'],'总股数')}
-    {!c.capital_bridge&&<label><input type="checkbox" checked={c.fixed_capital===true} onChange={e=>set(i,['fixed_capital'],e.target.checked)}/>已核对固定普通股资本；无未处理增发、回购或重组</label>}</div>
+    {!c.capital_bridge&&<>{input(i,['treasury_shares'],'固定资本下库存股数（不是金额）')}<label><input type="checkbox" checked={c.fixed_capital===true} onChange={e=>set(i,['fixed_capital'],e.target.checked)}/>已核对固定普通股资本；无未处理增发、回购或重组</label></>}</div>
    <label>情景依据与不利条件<textarea aria-label={`${scenarios[c.scenario]}情景依据`} value={c.rationale||''} onChange={e=>set(i,['rationale'],e.target.value)}/></label>
    {['fcff','fcfe'].includes(method)&&<><div className="am-value-form-grid">{input(i,['operating','revenue0'],'基准年/TTM营收')}{input(i,['operating','nwc0'],'基准经营营运资本')}{c.nonoperating?.treatment!=='included_in_flows'&&input(i,['nonoperating','value'],'独立非经营资产净值（已排除经营现金流）')}
     {method==='fcff'&&<>{input(i,['debt'],'有息债务')}{input(i,['senior_claims'],'其他优先索取权')}{input(i,['minority_value'],'少数股东权益价值')}</>}</div>
@@ -62,6 +75,20 @@ export default function ValueAssumptionEditor({snapshot,assumptions,busy,onSave}
    {method==='rim'&&<>{input(i,['book_equity'],'当前普通股账面权益')}{input(i,['omega'],'第5年后剩余收益延续系数（0至1）')}<div className="am-value-scroll"><table><thead><tr><th>年度</th><th>ROE %</th><th>现金股利总额</th><th>其他综合收益调节</th></tr></thead><tbody>{Array.from({length:5},(_,y)=><tr key={y}><th>{y+1}</th><td>{input(i,['years',y,'roe'],`第${y+1}年ROE`,true)}</td><td>{input(i,['years',y,'dividend'],`第${y+1}年股利`)}</td><td>{input(i,['years',y,'oci'],`第${y+1}年OCI`)}</td></tr>)}</tbody></table></div><p>首版仅计算无需额外调节的clean-surplus情景；非零OCI、资本变化或权益耗尽会暂停估值。</p></>}
    {method==='nav'&&<>{(['assets','liabilities'] as const).map(group=><div key={group}><h4>{group==='assets'?'不重叠资产/分部价值':'负债与其他索取权'}</h4>{(c[group]||[]).map((row,j)=><div className="am-value-form-grid" key={j}><label>项目唯一名称<input value={row.id} onChange={e=>set(i,[group,j,'id'],e.target.value)}/></label>{input(i,[group,j,'value'],`${group==='assets'?'资产':'负债'}${j+1}调整后价值`)}</div>)}<button type="button" className="am-button" onClick={()=>set(i,[group],[...(c[group]||[]),{id:`${group}-${(c[group]?.length||0)+1}`,value:0}])}>添加{group==='assets'?'资产':'负债'}项目</button></div>)}{input(i,['costs'],'税费及处置成本')}<label><input type="checkbox" checked={c.complete===true} onChange={e=>set(i,['complete'],e.target.checked)}/>已核实重大资产、负债及成本清单完整，未重复计价</label></>}
   </fieldset>)}
+  <details className="am-evidence"><summary>经营失效条件与前瞻记录</summary><p>触及阈值只提示重新研究；来源、单位与目标期必须明确。空阈值不能当0。保存后冻结版本，不调用模型。</p>
+   {(draft.monitor_rules||[]).map((r,index)=><fieldset key={r.id}><legend>经营复核条件 {index+1}</legend><div className="am-value-form-grid">
+    <label>复核指标<select aria-label={`复核指标 ${index+1}`} value={r.metric} onChange={e=>updateRule(index,{metric:e.target.value,unit:moneyMetrics.includes(e.target.value)?'CNY':'ratio'})}>{Object.entries(monitorNames).map(([key,label])=><option key={key} value={key}>{label}</option>)}</select></label>
+    <label>失效/复核条件<select aria-label={`复核条件 ${index+1}`} value={r.operator} onChange={e=>updateRule(index,{operator:e.target.value as ValueMonitorRule['operator']})}><option value="lt">低于</option><option value="lte">不高于</option><option value="gt">高于</option><option value="gte">不低于</option></select></label>
+    <label>阈值（{r.unit==='ratio'?'小数比例，如0.1':'元'}）<input aria-label={`复核阈值 ${index+1}`} type="number" step="any" value={r.threshold??''} onChange={e=>updateRule(index,{threshold:e.target.value===''?undefined:Number(e.target.value)})}/></label>
+    <label>目标财务期间（空则检查最新）<input aria-label={`复核目标期间 ${index+1}`} type="date" value={r.target_period||''} onChange={e=>updateRule(index,{target_period:e.target.value||null})}/></label>
+    <label>复核日期<input aria-label={`复核日期 ${index+1}`} type="date" value={r.review_on||''} onChange={e=>updateRule(index,{review_on:e.target.value||null})}/></label>
+    <label>原始依据<select aria-label={`复核来源 ${index+1}`} value={r.sources[0]||''} onChange={e=>updateRule(index,{sources:e.target.value?[e.target.value]:[]})}><option value="">选择原始资料</option>{snapshot.evidence.filter(e=>e.id!=='VALUE_STRATEGY').map(e=><option key={e.id} value={e.id}>{e.id} · {e.source}</option>)}</select></label>
+   </div><label>触发后应检查的反证<textarea aria-label={`复核说明 ${index+1}`} value={r.rationale} onChange={e=>updateRule(index,{rationale:e.target.value})}/></label><button type="button" className="am-button" onClick={()=>{setDirty(true);setDraft(a=>({...a,monitor_rules:(a.monitor_rules||[]).filter((_,i)=>i!==index)}));}}>删除复核条件 {index+1}</button></fieldset>)}
+   <button type="button" className="am-button" onClick={()=>{setDirty(true);setDraft(a=>({...a,monitor_rules:[...(a.monitor_rules||[]),{id:`rule-${Date.now()}-${a.monitor_rules?.length||0}`,metric:'revenue',operator:'lt',unit:'CNY',basis:'ttm',sources:basis?[basis]:[],rationale:''}]}));}}>添加经营复核条件</button>
+   {!!strategy?.company_drivers.projections.length&&<button type="button" className="am-button" onClick={recordProjection}>记录下一期历史锚点为待验证假设</button>}
+   {(draft.forecast_observations||[]).map((o,index)=><fieldset key={`${o.metric}-${o.period}-${index}`}><legend>前瞻假设：{monitorNames[o.metric]||o.metric} · {o.period}</legend><p>数值{o.value}（{o.unit}）；来源 {o.sources.join('、')}；{o.rationale}</p><button type="button" className="am-button" onClick={()=>{setDirty(true);setDraft(a=>({...a,forecast_observations:(a.forecast_observations||[]).filter((_,i)=>i!==index)}));}}>删除前瞻记录 {index+1}</button></fieldset>)}
+   <p>使用下方保存按钮正式记录。已保存的原始前瞻不会因删除或后改参数而被改写；尚未到期不会显示为已验证。</p>
+  </details>
   <fieldset><legend>风险与反证复核</legend><p>只有完成有来源的关键核查，才可能发布条件安全价；勾选代表你的核对记录，不代表软件证明无风险。</p>
    {Object.entries(reviews).map(([k,label])=><label className="am-value-check" key={k}><input type="checkbox" checked={draft.risk_review[k]?.status==='reviewed'} disabled={!basis} onChange={e=>{setDirty(true);setDraft(a=>({...a,risk_review:{...a.risk_review,[k]:{status:e.target.checked?'reviewed':'unresolved',sources:basis?[basis]:[]}}}));}}/>{label}（引用所选资料，请确保原文确实覆盖该事项）</label>)}
   </fieldset>

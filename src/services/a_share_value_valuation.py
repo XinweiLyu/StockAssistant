@@ -42,11 +42,19 @@ def project_operating_case(case, financial_view):
         nwc = new_nwc
         rows.append(row)
     field = 'fcfe' if case.get('method') == 'fcfe' else 'fcff'
-    return dict(rows=rows[:5], flows=[r[field] for r in rows[:5]], terminal_flow=rows[5][field], terminal_row=rows[5])
+    # A change in working-capital intensity at the transition is not an
+    # annual source/use of cash. Capitalize only the recurring steady state.
+    g=op['terminal']['growth'];terminal=rows[5]
+    recurring_nwc=terminal['nwc']*g/(1+g)
+    transition=recurring_nwc-terminal['delta_nwc']
+    return dict(rows=rows[:5], flows=[r[field] for r in rows[:5]],
+        terminal_flow=terminal[field]-transition, terminal_transition_cash=transition, terminal_row=terminal)
 
 
 def _times(case):
     if not case.get('start_date'):
+        if case.get('payment_dates'):
+            raise ValueError('明确派息日期必须提供估值起点，不能忽略日期')
         return [1., 2., 3., 4., 5.]
     from src.services.a_share_value_holding import cashflow_schedule
     return [v['time'] for v in cashflow_schedule(case, case['start_date'])]
@@ -57,7 +65,13 @@ def evaluate_method(method, case, financial_view, eligibility):
     try:
         if eligibility.get('allowed_methods') is not None and method not in eligibility['allowed_methods']:
             raise ValueError('该经济模型不适用'+method+'；请先核实主营或选用适配方法')
-        shares = required(case, 'shares', 1e-12)
+        case=deepcopy(case)
+        anchor=eligibility.get('valuation_date')
+        if anchor:
+            if case.get('start_date') and case['start_date'][:10]!=anchor[:10]:
+                raise ValueError('现金流起点必须与快照估值日一致')
+            case['start_date']=anchor[:10]
+        issued = shares = required(case, 'shares', 1e-12)
         capital_bridge=case.get('capital_bridge')
         if method=='ddm' and financial_view.get('latest',{}).get('treasury_share_cost',{}).get('value',0)>0:
             if not isinstance(capital_bridge,dict) or required(capital_bridge,'initial_treasury_shares',0)<=0:
@@ -66,6 +80,12 @@ def evaluate_method(method, case, financial_view, eligibility):
             raise ValueError('动态资本桥接仅支持DDM，须明确非固定股本且不混入第二套资本路径')
         if not capital_bridge and (case.get('fixed_capital') is not True or case.get('capital_changes')):
             raise ValueError('须核实固定普通股资本；融资增发/回购/重组需完整桥接')
+        if not capital_bridge:
+            cost=financial_view.get('latest',{}).get('treasury_share_cost',{}).get('value')
+            if cost is not None and cost>0 and case.get('treasury_shares') is None:
+                raise ValueError('已知库存股，须核对库存股数量以计算外部普通股每股价值')
+            treasury=required(case,'treasury_shares',0) if 'treasury_shares' in case else 0
+            shares=number(issued-treasury,'外部普通股股数',1e-12)
         if method == 'nav':
             if case.get('complete') is not True:
                 raise ValueError('NAV须确认重大资产、索取权、税费清单完整')
@@ -76,20 +96,21 @@ def evaluate_method(method, case, financial_view, eligibility):
             if any(not v for v in ids) or len(ids) != len(set(ids)):
                 raise ValueError('NAV资产或负债标识重复/缺失，不能重复计价')
             value = sum(required(v, 'value', 0) for v in assets)-sum(required(v, 'value', 0) for v in liabilities)-required(case, 'costs', 0)
-            return result | dict(state='ready', value_total=value, value_per_share=value/shares, terminal_share=0,
+            return result | dict(state='ready', value_total=value, value_per_share=value/shares, terminal_share=0,shares=shares,issued_shares=issued,
                                  bridge=dict(assets=assets, liabilities=liabilities, costs=case['costs']))
         r = required(case, 'discount', .0001, 1)
         times = _times(case)
         g = required(case, 'terminal_growth', -.99, .2) if method != 'rim' else 0
         if method != 'rim' and r-g < .01-1e-12:
             raise ValueError('折现率必须高于终值增长至少1个百分点')
-        terminal, adjustment, rows = 0, 0, []
+        terminal, adjustment, rows, transition = 0, 0, [], 0
         if method in ('fcfe', 'fcff'):
             if abs(required(case.get('operating', {}).get('terminal', {}), 'growth')-g) > 1e-9:
                 raise ValueError('稳定期营收增长须与终值增长一致')
             projected = project_operating_case(case | dict(method=method), financial_view)
             flows, rows = projected['flows'], projected['rows']
             terminal = projected['terminal_flow']/(r-g)
+            transition=projected['terminal_transition_cash']
             nonop = case.get('nonoperating', {})
             if nonop.get('treatment') == 'separate':
                 adjustment += required(nonop, 'value', 0)
@@ -138,13 +159,17 @@ def evaluate_method(method, case, financial_view, eligibility):
         else:
             raise ValueError('不支持的估值方法')
         pv_flows = sum(flow/(1+r)**t for flow, t in zip(flows, times))
+        recurring_terminal=terminal
+        transition_pv=transition/(1+r)**(times[-1]+1)
         terminal_pv = terminal/(1+r)**times[-1]
-        value = pv_flows+terminal_pv+adjustment
+        value = pv_flows+terminal_pv+transition_pv+adjustment
         number(value, 'valuation')
         return result | dict(state='ready', value_total=value, value_per_share=value/shares,
-            operating_equity=pv_flows+terminal_pv, terminal_value=terminal, terminal_pv=terminal_pv,
+            operating_equity=pv_flows+terminal_pv+transition_pv,
+            terminal_value=terminal+transition/(1+r), terminal_pv=terminal_pv+transition_pv,
+            recurring_terminal_value=recurring_terminal,terminal_transition_cash=transition,transition_pv=transition_pv,
             terminal_share=terminal_pv/value if value else None, flows=flows, times=times,
-            rows=rows, adjustment=adjustment, discount=r, shares=shares)
+            rows=rows, adjustment=adjustment, discount=r, shares=shares,issued_shares=issued)
     except (ValueError, TypeError, KeyError, OverflowError, ZeroDivisionError) as exc:
         # Messages are our field validation only; no provider exception reaches this calculator.
         return result | dict(missing=[str(exc) if isinstance(exc, ValueError) else '估值字段结构不完整'])
@@ -173,7 +198,9 @@ def evaluate_value(assumptions, snapshot):
         raise ValueError('估值假设与资料股票/版本不一致')
     eligibility = s['binding'].get('eligibility', {})
     allowed = s['economic_model'].get('allowed_methods')
-    results = [evaluate_method(c.get('method'), c, s['financial_view'], dict(allowed_methods=allowed) if allowed is not None else {}) for c in a['cases']]
+    method_context=dict(valuation_date=s['cutoff'][:10])
+    if allowed is not None:method_context['allowed_methods']=allowed
+    results = [evaluate_method(c.get('method'), c, s['financial_view'], method_context) for c in a['cases']]
     primary = {r['scenario']: r for r in results if r['method'] == a['primary_method'] and r['state'] == 'ready'}
     missing = [m for r in results for m in r.get('missing', [])]
     complete = all(k in primary for k in ('conservative', 'base', 'upside'))
@@ -242,7 +269,8 @@ def evaluate_value(assumptions, snapshot):
             elif case.get('method') == 'nav':
                 for asset in case['assets']:
                     asset['value'] *= .8
-            stress = evaluate_method(case.get('method'), case, s['financial_view'], {})
+            stress = evaluate_method(case.get('method'), case, s['financial_view'], method_context)
+            if change=='operating' and case.get('method')=='ddm':label='股利分配减少20%（非经营压力）'
             sensitivities.append(dict(label=label, value=stress.get('value_per_share'), missing=stress.get('missing', []), note='显式机械压力，不是概率'))
     return ValueReport(code=a['code'], snapshot_id=s['snapshot_id'], assumptions_revision=a['revision'],
         parameter_origin='reference_sensitivity_v1' if reference else None,

@@ -26,6 +26,79 @@ def test_get_is_read_only_and_freeze_does_not_require_price_history(tmp_path):
     assert snapshot['financial_view']['latest']['shares']['value'] == 10
     assert svc.value.get('600034')['snapshot']['snapshot_id'] == snapshot['snapshot_id']
     assert svc.repo.manual_usage('free', '2026-10-30') == 0
+    assert svc.value.get('600034')['strategy']['company_drivers']['state']=='insufficient'
+
+
+def test_saved_model_missing_prefixes_show_as_classified_unverified_gaps_without_a_new_call(tmp_path):
+    svc=value_service(tmp_path);svc.settings=svc.settings.model_copy(update={'model':'mock'});s=svc.value.capture('600034')
+    svc.repo.append('free','value_review','free:600034',dict(code='600034',snapshot_id=s['snapshot_id'],model='mock',
+        published_revision=0,status='partial',missing=['delivery: 未送达财报附注']))
+    gaps=svc.value.get('600034')['strategy']['gaps']
+    assert any(g['kind']=='delivery' and '未送达财报附注' in g['item'] for g in gaps)
+    assert svc.repo.manual_usage('free','2026-10-30')==0
+
+
+def test_inverse_cannot_bypass_the_effective_model_applicability(tmp_path,monkeypatch):
+    svc=value_service(tmp_path);monkeypatch.setattr(svc.value,'_quote',lambda stock:dict(valid=True,price=10,trade_date='2026-10-30',basis='raw'))
+    s=svc.value.capture('600034')
+    a=dict(code='600034',snapshot_id=s['snapshot_id'],primary_method='fcff',cases=[operating_case(scenario=x) for x in ('conservative','base','upside')])
+    svc.value.save_assumptions('600034',SaveValueRequest(snapshot_id=s['snapshot_id'],expected_revision=0,assumptions=a))
+    r=svc.value.get('600034')
+    assert r['strategy']['expectations']['state']!='solved'
+
+
+def test_inverse_and_guidance_use_the_same_model_override_and_event_adjusted_case(tmp_path,monkeypatch):
+    svc=value_service(tmp_path);monkeypatch.setattr(svc.value,'_quote',lambda stock:dict(valid=True,price=17.5,trade_date='2026-10-30',basis='raw'))
+    d=svc.repo.latest('free','research_data',key='free:600034')
+    svc.repo.append('free','research_data','free:600034',d|dict(events=[dict(id='E1',family_id='fam',published_at='2026-10-20',title='经营变化')]))
+    s=svc.value.capture('600034');a=dict(code='600034',snapshot_id=s['snapshot_id'],primary_method='fcff',
+        cases=[operating_case(scenario=x) for x in ('conservative','base','upside')],
+        economic_model_override=dict(model='operating',reason='人工核对主营',evidence_ids=[s['facts'][0]['fact_id']]),
+        driver_changes=[dict(event_id='E1',field='ebit_margin',unit='ratio',old=.2,new=.3,years=[1,2,3,4,5],
+            temporal_type='structural',include_terminal=True,terminal_old=.2,already_in_baseline=False,rationale='经营利润率结构变化',sources=['E1'])])
+    svc.value.save_assumptions('600034',SaveValueRequest(snapshot_id=s['snapshot_id'],expected_revision=0,assumptions=a))
+    svc.value.evaluate('600034',EvaluateValueRequest(snapshot_id=s['snapshot_id'],assumptions_revision=1))
+    r=svc.value.get('600034')
+    assert abs(r['strategy']['expectations']['solution'])<.0001
+    assert any(g['method']=='fcff' for g in r['strategy']['method_guidance'])
+
+
+def test_first_forward_observation_survives_more_than_a_hundred_revisions(tmp_path):
+    svc=value_service(tmp_path);s=svc.value.capture('600034');fid=s['facts'][0]['fact_id']
+    obs=dict(metric='revenue',period='2027-09-30',value=100.0,unit='CNY',basis='ttm',sources=[fid],rationale='原始经营假设')
+    for i in range(1,102):
+        a=dict(code='600034',snapshot_id=s['snapshot_id'],revision=i,cases=[],primary_method='fcff',forecast_observations=[obs|dict(value=100.0 if i==1 else 140.0)])
+        svc.repo.append('free','value_assumptions','free:600034',a)
+    result=svc.value.get('600034')['strategy']['monitoring']['forward_checks']
+    assert result[0]['forecast']==100.0 and result[0]['revision']==1
+
+
+def test_peer_rows_include_matching_operating_and_cash_metrics(tmp_path):
+    from tests.test_a_share_value_economics import view
+    svc=value_service(tmp_path);v=view()
+    data=dict(facts=[dict(fact_id='Q1',source='eastmoney/stock_value_em',values=dict(trade_date='2026-10-30',market_cap=200))])
+    row=svc.value._peer_row(dict(code='600034',identity_verified=True),data,{},v,{})
+    assert row['metrics']['roe']==pytest.approx(.1)
+    assert row['metrics']['operating_margin']==.2
+    assert row['metrics']['cash_yield']==.08
+    assert row['metric_basis']['cash_yield']['date']=='2026-10-30'
+    assert '合并' in row['metric_basis']['cash_yield']['definition']
+
+
+def test_monitor_rules_and_frozen_forward_observations_roundtrip_without_model_calls(tmp_path):
+    svc=value_service(tmp_path);s=svc.value.capture('600034');fid=s['facts'][0]['fact_id']
+    a=dict(code='600034',snapshot_id=s['snapshot_id'],cases=[],monitor_rules=[dict(id='sales',metric='revenue',
+        operator='lt',threshold=80.0,unit='CNY',target_period='2027-09-30',review_on='2027-10-31',sources=[fid],rationale='收入低于假设则复核')],
+        forecast_observations=[dict(metric='revenue',period='2027-09-30',value=100.0,unit='CNY',sources=[fid],rationale='基于已披露规模的待验证假设')])
+    saved=svc.value.save_assumptions('600034',SaveValueRequest(snapshot_id=s['snapshot_id'],expected_revision=0,assumptions=a))
+    assert saved['monitor_rules'][0]['threshold']==80
+    result=svc.value.get('600034')
+    assert result['strategy']['monitoring']['rules'][0]['state']=='pending'
+    assert result['strategy']['monitoring']['forward_checks'][0]['state']=='pending'
+    assert svc.repo.manual_usage('free','2026-10-30')==0
+    a['monitor_rules'][0]['sources']=['not-known']
+    with pytest.raises(ValueError,match='来源'):
+        svc.value.save_assumptions('600034',SaveValueRequest(snapshot_id=s['snapshot_id'],expected_revision=1,assumptions=a))
 
 
 def test_assumptions_optimistic_revision_and_zero_ai_calculation(tmp_path):
@@ -119,6 +192,7 @@ def test_eta_uses_observed_same_model_durations_only(tmp_path):
         svc.repo.append('free','value_review','free:600034',dict(status='partial',model='mock',elapsed_seconds=seconds))
     assert svc.value._eta('mock',10)==[40,60]
     assert svc.value._eta('different',10) is None
+    assert svc.value._eta('mock',80) is None
 
 
 def test_current_integrated_case_dictionary_is_reused_with_version_binding(tmp_path,monkeypatch):

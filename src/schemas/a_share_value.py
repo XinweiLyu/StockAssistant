@@ -2,7 +2,7 @@
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, field_validator, model_validator
 
-VERSION = 'value-research-v3'
+VERSION = 'value-research-v4'
 
 
 class ValueModel(BaseModel):
@@ -60,6 +60,45 @@ class HoldingCase(ValueModel):
     costs_per_share: StrictFloat | None = Field(default=None, ge=0)
 
 
+class MonitorRule(ValueModel):
+    id: str = Field(min_length=1,max_length=80)
+    metric: Literal['revenue','net_profit','operating_cashflow','capex','roe','operating_margin','cash_conversion','roic_proxy','cash_surplus_proxy']
+    operator: Literal['lt','lte','gt','gte']
+    threshold: StrictFloat
+    unit: Literal['CNY','ratio']
+    basis: Literal['ttm'] = 'ttm'
+    target_period: str | None = None
+    review_on: str | None = None
+    sources: list[str] = Field(min_length=1,max_length=30)
+    rationale: str = Field(min_length=3,max_length=1000)
+
+    @field_validator('target_period','review_on')
+    @classmethod
+    def dates(cls,value):
+        if value is not None:
+            from datetime import date
+            if date.fromisoformat(value).isoformat()!=value:raise ValueError('日期须为YYYY-MM-DD')
+        return value
+
+
+class ForecastObservation(ValueModel):
+    metric: Literal['revenue','net_profit','operating_cashflow','capex','roe','operating_margin','cash_conversion','roic_proxy','cash_surplus_proxy']
+    period: str
+    value: StrictFloat
+    unit: Literal['CNY','ratio']
+    basis: Literal['ttm'] = 'ttm'
+    sources: list[str] = Field(min_length=1,max_length=30)
+    rationale: str = Field(min_length=3,max_length=1000)
+    origin: Literal['user_assumption','company_history','model_proposal'] = 'user_assumption'
+
+    @field_validator('period')
+    @classmethod
+    def period_date(cls,value):
+        from datetime import date
+        if date.fromisoformat(value).isoformat()!=value:raise ValueError('日期须为YYYY-MM-DD')
+        return value
+
+
 class ValueSnapshot(ValueModel):
     version: str = VERSION
     snapshot_id: str
@@ -93,6 +132,16 @@ class ValueAssumptions(ValueModel):
     risk_review: dict = Field(default_factory=dict)
     economic_model_override: dict | None = None
     cycle_review: dict = Field(default_factory=dict)
+    monitor_rules: list[MonitorRule] = Field(default_factory=list,max_length=30)
+    forecast_observations: list[ForecastObservation] = Field(default_factory=list,max_length=30)
+
+    @model_validator(mode='after')
+    def unique_records(self):
+        ids=[r.id for r in self.monitor_rules]
+        forecasts=[(r.metric,r.period,r.basis) for r in self.forecast_observations]
+        if len(ids)!=len(set(ids)) or len(forecasts)!=len(set(forecasts)):
+            raise ValueError('复核规则ID或预测期间指标不能重复')
+        return self
 
     @field_validator('cases', 'driver_changes', 'theses', 'risk_review', 'peer_confirmations', 'economic_model_override', 'cycle_review')
     @classmethod

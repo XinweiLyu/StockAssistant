@@ -72,7 +72,7 @@ export function useValueResearch(code:string){
  }),[action,code]);
  const save=useCallback((a:ValueAssumptions,confirmed:boolean)=>action(async signal=>{
   const saved=await aShareMarketApi.saveValueAssumptions(code,a.snapshot_id,result?.assumptions?.revision||0,a,confirmed,signal);
-  if(confirmed&&!signal.aborted)return aShareMarketApi.evaluateValue(code,a.snapshot_id,saved.revision,signal);
+  if((confirmed||a.monitor_rules?.length||a.forecast_observations?.length)&&a.cases.length&&!signal.aborted)return aShareMarketApi.evaluateValue(code,a.snapshot_id,saved.revision,signal);
   return saved;
  }),[action,code,result]);
  const supplement=useCallback((facts:ValueSupplement[])=>action(signal=>{if(!result?.snapshot)throw new Error('请先准备资料');return aShareMarketApi.supplementValue(code,result.snapshot.snapshot_id,facts,signal);}),[action,code,result]);

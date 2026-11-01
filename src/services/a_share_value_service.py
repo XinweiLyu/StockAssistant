@@ -2,7 +2,7 @@
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
-from sqlalchemy import select
+from sqlalchemy import select, func
 from src.schemas.a_share import AssistantSettings
 from src.schemas.a_share_integrated import digest, stamp
 from src.schemas.a_share_value import VERSION, ValueFact, ValueSnapshot, ValueAssumptions
@@ -77,20 +77,32 @@ class ValueResearchService:
         # substitute for the other company's own verified economic identity.
         industry = self.assistant.integrated._industry(stock['code'])
         model = select_economic_model(industry, [], None)
-        metrics, basis = {}, {}
+        metrics, basis,valuation = {}, {},None
         for f in sorted(data.get('facts', []), key=lambda f:f.get('values', {}).get('trade_date') or ''):
             for key, target in [('pe_ttm', 'pe'), ('pb', 'pb')]:
                 day = f.get('values', {}).get('trade_date')
                 if f.get('values', {}).get(key) is not None and day and day <= self.now()[:10]:
                     metrics[target] = f['values'][key]
                     basis[target] = dict(date=day, definition=key, source=f.get('source'), fact_ids=[f.get('fact_id')])
+            day=f.get('values',{}).get('trade_date')
+            market_cap=f.get('values',{}).get('market_cap')
+            if day and day<=self.now()[:10] and isinstance(market_cap,(int,float)) and market_cap>0 and f.get('source') in ('eastmoney/stock_value_em','tushare/daily_basic'):
+                valuation=f
         latest = view.get('latest', {})
         equity = latest.get('parent_equity', {}).get('value')
         ttm = view.get('ttm', {})
-        if equity and equity > 0 and ttm.get('net_profit'):
-            metrics['roe'] = ttm['net_profit']['value']/equity
-            basis['roe'] = dict(date=view.get('latest_period'),definition='parent_profit_TTM/end_parent_equity',
-                source=ttm['net_profit']['vendor'],fact_ids=ttm['net_profit']['fact_ids']+latest['parent_equity']['fact_ids'])
+        from src.services.a_share_value_economics import build_economic_analysis
+        economic=build_economic_analysis(view,model['model'])['metrics']
+        for key in ('roe','operating_margin'):
+            m=economic[key]
+            if m['value'] is not None:
+                metrics[key]=m['value']
+                basis[key]=dict(date=m['period'],definition=m['formula'],source=m.get('vendor'),fact_ids=m['fact_ids'])
+        cash=economic['cash_surplus_proxy']
+        if valuation and cash['value'] is not None:
+            metrics['cash_yield']=cash['value']/valuation['values']['market_cap']
+            basis['cash_yield']=dict(date=valuation['values']['trade_date'],definition='合并CFO减总capex/普通股总市值代理（非严格FCFE）',
+                source=valuation['source']+'|'+(cash.get('vendor') or 'unknown'),fact_ids=cash['fact_ids']+[valuation['fact_id']])
         return dict(code=stock['code'], name=stock.get('name'), verified=bool(stock.get('identity_verified')),
             industry_id=(industry or {}).get('sector_id'), economic_model=model['model'],
             period=view.get('latest_period'), parent_equity=equity, metrics=metrics, metric_basis=basis)
@@ -148,6 +160,9 @@ class ValueResearchService:
         cases = self._case_library(code, cutoff)
         if cases:
             evidence.append(dict(id='VALUE_CASES', source='已保存的可比事件研究', content=json.dumps(cases[:20], ensure_ascii=False)))
+        from src.services.a_share_value_strategy import build_value_strategy
+        strategy=build_value_strategy(dict(financial_view=view,economic_model=model))
+        evidence.append(dict(id='VALUE_STRATEGY',source='派生经营底稿，须引用底层原始事实',content=json.dumps(strategy,ensure_ascii=False)))
         missing = []
         cached_disclosures=next((c for c in data.get('coverage',[]) if c.get('category')=='disclosures' and c.get('cached')),None)
         if cached_disclosures:
@@ -208,7 +223,7 @@ class ValueResearchService:
             if r['key'].startswith(self.profile+':') and r['payload'].get('model') == model
             and r['payload'].get('status') in ('complete','partial')
             and isinstance(r['payload'].get('elapsed_seconds'),(int,float)) and r['payload']['elapsed_seconds']>0]
-        if len(samples)<3:
+        if len(samples)<3 or elapsed>=max(samples):
             return None
         # Empirical observed span, not a promise about model progress.
         return [round(max(0,min(samples)-elapsed)),round(max(0,max(samples)-elapsed))]
@@ -276,13 +291,80 @@ class ValueResearchService:
             reference=build_value_reference(snapshot)
             if reference['state']=='ready':
                 progress=progress|dict(message='AI完整估值未形成；已提供可编辑参数试算，不额外调用模型')
-        return dict(code=code, status=status, snapshot=snapshot, report=report, assumptions=assumptions,reference=reference,
+        from src.services.a_share_value_strategy import build_value_strategy
+        source_a=assumptions if assumptions and snapshot and assumptions.get('snapshot_id')==snapshot['snapshot_id'] else (reference or {}).get('assumptions',{})
+        effective,changes=self._effective_inputs(snapshot,source_a or {}) if snapshot else (None,{})
+        strategy=build_value_strategy(effective,(source_a or {})|dict(cases=changes['cases']),report or (reference or {}).get('report')) if snapshot else None
+        if strategy:
+            strategy['stale']=bool(reasons)
+            strategy['delivery']=dict(sent_count=len((review or {}).get('sent_ids',[])),omitted_count=len((review or {}).get('omitted_ids',[])))
+            from src.services.a_share_value_research import classified_model_gaps
+            strategy['gaps'] += [dict(kind=g['kind'],item=g['item'],blocks='模型提出的待核对缺口，尚非事实核验') for g in classified_model_gaps(review or {})]
+            base=next((c for c in changes['cases'] if c.get('method')==(source_a or {}).get('primary_method') and c.get('scenario')=='base'),None)
+            if base and not reasons and not changes['rejected']:
+                from src.services.a_share_value_expectations import reverse_value
+                context=dict(valuation_date=effective['cutoff'][:10],allowed_methods=effective['economic_model'].get('allowed_methods'))
+                strategy['expectations']=reverse_value(base,effective['financial_view'],self._quote(stock).get('price'),self._quote(stock),context)
+            else:strategy['expectations']=dict(state='unavailable',reason='当前可计算公司假设或价格资料不足/过期，不能反推')
+            from src.services.a_share_value_monitoring import build_monitoring
+            frozen=self._forward_history(code,snapshot,assumptions)
+            portfolio=self.assistant.portfolio()
+            portfolio=portfolio|dict(risk=self.assistant.settings.risk.model_dump())
+            monitoring_snapshot=deepcopy(snapshot);monitoring_snapshot['binding']['quote']=self._quote(stock)
+            strategy['monitoring']=build_monitoring(monitoring_snapshot,assumptions,report,portfolio,frozen,as_of=self.now())
+        return dict(code=code, status=status, snapshot=snapshot, report=report, assumptions=assumptions,reference=reference,strategy=strategy,
             review=review, historical_review=historical_review, history=history, stale_reasons=reasons, progress=progress,
             data_task={k: data_task[k] for k in ('id', 'state', 'error')} if data_task else None,
             task={k: task[k] for k in ('id', 'state', 'error')} if task else None,
             quote=self._quote(stock), demo=self.profile == 'demo',
             peer_progress=peers,
             message='查看与计算不调用AI；确认假设不等于证明估值正确')
+
+    def _forward_history(self,code,snapshot,assumptions):
+        """Load only referenced baselines; never retain a hundred report PDFs."""
+        from src.repositories.a_share_repository import AssistantRepository
+        # Freeze earliest identities before limiting displayed observations.
+        # Reading the newest N revisions would silently rewrite old forecasts.
+        query=select(JOURNAL.c.created_at,JOURNAL.c.payload).where(JOURNAL.c.mode==AssistantRepository.namespace(self.profile),
+            JOURNAL.c.kind=='value_assumptions',JOURNAL.c.key==self.key(code)).order_by(JOURNAL.c.id.asc())
+        records=[];seen=set()
+        with self.assistant.repo.engine.connect() as conn:
+            for row in conn.execute(query).mappings():
+                old=json.loads(row['payload']);selected=[]
+                for obs in old.get('forecast_observations',[]):
+                    identity=(obs['metric'],obs['period'],obs.get('basis','ttm'))
+                    if identity in seen or row['created_at'][:10]>=obs['period']:continue
+                    if len(seen)>=60:continue
+                    seen.add(identity);selected.append(obs)
+                current=assumptions and old.get('revision')==assumptions.get('revision') and old.get('snapshot_id')==assumptions.get('snapshot_id')
+                if selected or current:
+                    payload={k:old.get(k) for k in ('code','revision','snapshot_id')}
+                    records.append(dict(created_at=row['created_at'],payload=payload|dict(forecast_observations=selected)))
+        needed={r['payload'].get('snapshot_id') for r in records if r['payload'].get('forecast_observations')}
+        if assumptions:needed.add(assumptions.get('snapshot_id'))
+        snapshots={snapshot['snapshot_id']:snapshot}
+        needed.discard(snapshot['snapshot_id']);needed.discard(None)
+        if needed:
+            query=select(JOURNAL.c.payload).where(JOURNAL.c.mode==AssistantRepository.namespace(self.profile),
+                JOURNAL.c.kind=='value_snapshot',JOURNAL.c.key==self.key(code),
+                func.json_extract(JOURNAL.c.payload,'$.snapshot_id').in_(needed)).order_by(JOURNAL.c.id.desc())
+            with self.assistant.repo.engine.connect() as conn:
+                for raw in conn.execute(query).scalars():
+                    old=json.loads(raw);identity=old['snapshot_id']
+                    if identity in snapshots:continue
+                    snapshots[identity]=dict(code=old['code'],cutoff=old['cutoff'],
+                        financial_view=dict(latest_period=old.get('financial_view',{}).get('latest_period')),
+                        facts=[dict(fact_id=f['fact_id']) for f in old.get('facts',[])],
+                        evidence=[dict(id=e['id']) for e in old.get('evidence',[])])
+        return [r|dict(snapshot=snapshots.get(r['payload'].get('snapshot_id'))) for r in records]
+
+    @staticmethod
+    def _effective_inputs(snapshot,assumptions):
+        working=deepcopy(snapshot)
+        if assumptions.get('economic_model_override'):
+            working['economic_model']=select_economic_model(working['binding'].get('industry'),[],assumptions['economic_model_override'])
+            working['missing']=[m for m in working['missing'] if not m.startswith('行业或主营经济模型尚未识别')]
+        return working,apply_driver_changes(working,assumptions)
 
     def _require_snapshot(self, code, identity):
         snapshot = self._latest('value_snapshot', code)
@@ -326,6 +408,13 @@ class ValueResearchService:
                 not override.get('evidence_ids') or not set(override['evidence_ids']) <= ids):
                 raise ValueError('人工经济模型修正须有当前资料来源、理由及受支持模型')
         from urllib.parse import urlsplit
+        known={f['fact_id'] for f in snapshot['facts']}|{e['id'] for e in snapshot['evidence']}
+        for rule in a['monitor_rules']+a['forecast_observations']:
+            if not set(rule['sources'])<=known or set(rule['sources'])=={'VALUE_STRATEGY'}:
+                raise ValueError('复核/前瞻记录须有当前底层事实来源')
+        for obs in a['forecast_observations']:
+            if obs['period']<=max(snapshot['cutoff'][:10],snapshot['financial_view'].get('latest_period') or ''):
+                raise ValueError('前瞻记录须指向尚未结束的未来财务期间')
         for peer in a['peer_confirmations']:
             if not peer.get('attested'):
                 peer['evidence_ids'] = []
@@ -395,11 +484,8 @@ class ValueResearchService:
         if not assumptions or assumptions['revision'] != request.assumptions_revision or assumptions['snapshot_id'] != request.snapshot_id:
             raise ValueConflict('假设版本已变化，请核对最新版本')
         snapshot['binding']['quote'] = self._quote(self._stock(code))
-        if assumptions.get('economic_model_override'):
-            snapshot['economic_model'] = select_economic_model(snapshot['binding'].get('industry'), [], assumptions['economic_model_override'])
-            snapshot['missing'] = [m for m in snapshot['missing'] if not m.startswith('行业或主营经济模型尚未识别')]
+        snapshot,changes=self._effective_inputs(snapshot,assumptions)
         snapshot['peers'] = build_peer_comparison(snapshot['peers']['target'], snapshot['peers']['candidates'], assumptions.get('peer_confirmations', []))
-        changes = apply_driver_changes(snapshot, assumptions)
         result = evaluate_value(assumptions | dict(cases=changes['cases']), snapshot)
         result['generated_at'] = self.now()
         if changes['effects']:
@@ -506,9 +592,15 @@ class ValueResearchService:
                         progress(dict(phase='calculating',percent=85,message='校验拟议假设并进行确定性估值，不再请求模型',eta_seconds=None))
                         saved = self.save_assumptions(code, SaveValueRequest(snapshot_id=snapshot['snapshot_id'],
                             expected_revision=payload['assumptions_revision'], assumptions=proposed, confirmed=False))
-                        self.evaluate(code, EvaluateValueRequest(snapshot_id=snapshot['snapshot_id'], assumptions_revision=saved['revision']))
+                        calculated = self.evaluate(code, EvaluateValueRequest(snapshot_id=snapshot['snapshot_id'], assumptions_revision=saved['revision']))
+                        primary = {c['scenario'] for c in calculated['valuation_cases'] if c['method']==saved['primary_method'] and c['state']=='ready'}
+                        if primary != {'conservative','base','upside'}:
+                            review['status']='partial'
+                            review.setdefault('missing',[]).append('研究任务已结束，但主方法三情景尚未全部算成；请查看各情景的计算缺口')
+                        review['calculation_state']=calculated['valuation_state']
                         review['published_revision'] = saved['revision']
                     except ValueError:
+                        review['status']='partial'
                         review.setdefault('missing', []).append('拟议假设无法计算或版本已变化，未作为有效估值发布')
                 review.setdefault('published_revision', payload['assumptions_revision'])
                 progress(dict(phase='saving',percent=97,message='保存报告与依据版本',eta_seconds=None))

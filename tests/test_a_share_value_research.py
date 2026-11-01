@@ -5,6 +5,121 @@ from src.schemas.a_share_value import GenerateValueRequest
 from tests.test_a_share_value_service import value_service
 
 
+def test_derived_strategy_is_not_a_substitute_for_delivered_raw_citations(tmp_path):
+    import json
+    svc=value_service(tmp_path);s=svc.value.capture('600034')
+    s['evidence'].append(dict(id='VALUE_STRATEGY',source='derived',content=json.dumps(
+        {'economics':{'metrics':{'unsafe':{'value':999,'fact_ids':['NOT_DELIVERED']}}}})))
+    seen={}
+    def completion(messages,model):
+        seen.update(json.loads(messages[1]['content']))
+        return dict(perspectives=[dict(text='没有原始来源的派生结论',sources=['VALUE_STRATEGY'])],proposed_assumptions=None)
+    result=ValueResearchEngine(svc.repo,completion).run(s,svc.settings.model_copy(update={'model':'mock'}),lambda p:None)
+    assert not result['perspectives']
+    record=next(e for e in seen['evidence'] if e['id']=='VALUE_STRATEGY')
+    assert '999' not in json.dumps(record['content'])
+
+
+def test_company_operating_notes_are_delivered_beyond_the_report_cover():
+    from src.services.a_share_value_research import _document_record
+    e=dict(id='ANNUAL',title='2025年年度报告',text='报告封面'+'其他内容'*3000+'主营业务分产品：饮料收入增长12%；前五名客户占比20%；短期借款到期日见附注。')
+    record=_document_record(e)
+    assert any('饮料收入增长12%' in x['text'] for x in record['content']['text_excerpts'])
+
+
+def test_pruning_undelivered_derived_inputs_still_obeys_final_message_budget(tmp_path):
+    import json
+    from src.services.a_share_value_research import build_value_payload,PROMPT
+    svc=value_service(tmp_path);s=svc.value.capture('600034')
+    s['evidence'].append(dict(id='VALUE_STRATEGY',source='derived',content=json.dumps(
+        {f'm{i}':{'value':999,'sources':['ABSENT']} for i in range(420)})))
+    p,sent,_=build_value_payload(s)
+    messages=[dict(role='system',content=PROMPT),dict(role='user',content=json.dumps(p,ensure_ascii=False))]
+    assert len(json.dumps(messages,ensure_ascii=False).encode())<=48000
+    assert sent=={e['id'] for e in p['evidence']}
+
+
+def test_model_gap_classification_is_retained_without_treating_it_as_verified(tmp_path):
+    svc=value_service(tmp_path);s=svc.value.capture('600034')
+    def completion(messages,model):
+        return dict(gaps=[dict(kind='assumption',item='未来维护资本开支待建立',sources=[]),
+            dict(kind='fact',item='伪造引用',sources=['ABSENT'])])
+    r=ValueResearchEngine(svc.repo,completion).run(s,svc.settings.model_copy(update={'model':'mock'}),lambda p:None)
+    assert len(r['gaps'])==1 and r['gaps'][0]['kind']=='assumption'
+    assert r['gaps'][0]['origin']=='model_proposal'
+
+
+def test_invalid_model_proposal_retains_bounded_draft_and_specific_field_errors(tmp_path):
+    svc=value_service(tmp_path);s=svc.value.capture('600034');fid=s['facts'][0]['fact_id']
+    proposed=dict(code='600034',snapshot_id=s['snapshot_id'],monitor_rules=[dict(id='sales',metric='revenue',
+        operator='lt',threshold='not-a-number',unit='CNY',sources=[fid],rationale='收入假设复核')])
+    def completion(messages,model):return dict(proposed_assumptions=proposed)
+    r=ValueResearchEngine(svc.repo,completion).run(s,svc.settings.model_copy(update={'model':'mock'}),lambda p:None)
+    assert r['proposed_assumptions'] is None
+    assert r['rejected_proposed_assumptions']==proposed
+    assert any('threshold' in e['path'] for e in r['proposal_errors'])
+
+
+def test_classified_legacy_missing_strings_are_retained_as_unverified_gaps(tmp_path):
+    svc=value_service(tmp_path);s=svc.value.capture('600034')
+    def completion(messages,model):return dict(missing=['delivery: 未送达财报附注','assumption: 未来量价待建立'])
+    r=ValueResearchEngine(svc.repo,completion).run(s,svc.settings.model_copy(update={'model':'mock'}),lambda p:None)
+    assert [g['kind'] for g in r['gaps']]==['delivery','assumption']
+
+
+def test_peer_basis_aliases_preserve_dates_and_definitions_without_repeating_them(tmp_path):
+    import json
+    from src.services.a_share_value_research import build_value_payload
+    svc=value_service(tmp_path);s=svc.value.capture('600034')
+    basis=dict(date='2026-09-30',definition='TTM归母利润/平均归母权益',source='eastmoney',fact_ids=['PEER_FACT'])
+    s['evidence'].append(dict(id='VALUE_PEERS',source='候选同行',content=json.dumps(dict(candidates=[dict(code=str(i),metrics=dict(roe=.1),metric_basis=dict(roe=basis)) for i in range(7)]))))
+    p,_,_=build_value_payload(s);peers=next(e['content'] for e in p['evidence'] if e['id']=='VALUE_PEERS')
+    alias=peers['candidates'][0]['metric_basis']['roe']
+    assert peers['basis_definitions'][alias]=={k:v for k,v in basis.items() if k!='fact_ids'}
+    assert all(c['metric_basis']['roe']==alias for c in peers['candidates'])
+
+
+def test_finished_model_task_does_not_claim_complete_valuation_when_math_is_blocked(tmp_path,monkeypatch):
+    from tests.test_a_share_value_valuation import operating_case
+    svc=value_service(tmp_path);svc.settings=svc.settings.model_copy(update={'research_enabled':True,'model':'mock'})
+    s=svc.value.capture('600034');c=operating_case();del c['debt'];c['evidence_ids']=[s['facts'][0]['fact_id']]
+    proposed=dict(code='600034',snapshot_id=s['snapshot_id'],cases=[c])
+    monkeypatch.setattr(ValueResearchEngine,'run',lambda *a,**k:dict(code='600034',snapshot_id=s['snapshot_id'],model='mock',
+        status='complete',proposed_assumptions=proposed,perspectives=[dict(text='草案',sources=c['evidence_ids'])]))
+    svc.value.generate('600034',GenerateValueRequest(snapshot_id=s['snapshot_id']))
+    svc.value.jobs.set_profile('free');svc.value.jobs.run_one()
+    assert svc.value.get('600034')['review']['status']=='partial'
+
+
+def test_valid_dynamic_dividend_proposal_reaches_three_calculated_scenarios_through_the_real_pipeline(tmp_path,monkeypatch):
+    from copy import deepcopy
+    from tests.test_a_share_value_valuation import dividend_capital_case
+    from src.services.a_share_research import ResearchEngine
+    svc=value_service(tmp_path);svc.settings=svc.settings.model_copy(update={'research_enabled':True,'model':'mock'})
+    s=svc.value.capture('600034');fid=s['facts'][0]['fact_id'];cases=[]
+    for scenario,discount in [('conservative',.12),('base',.1),('upside',.08)]:
+        case=dividend_capital_case();case.update(scenario=scenario,discount=discount,evidence_ids=[fid])
+        case['capital_bridge']['sources']=[fid];cases.append(case)
+    proposal=dict(code='600034',snapshot_id=s['snapshot_id'],primary_method='ddm',cases=cases,
+        economic_model_override=dict(model='operating',reason='测试中的已核对经营模型',evidence_ids=[fid]))
+    # Only the external response is substituted. Parsing, evidence validation,
+    # saving, capital/cash budgets, valuation and publication all remain real.
+    monkeypatch.setattr(ResearchEngine,'_complete',staticmethod(lambda *a,**kw:deepcopy(dict(
+        perspectives=[dict(text='离线合同测试观点，并非真实AI研究',sources=[fid])],proposed_assumptions=proposal))))
+    svc.value.generate('600034',GenerateValueRequest(snapshot_id=s['snapshot_id']))
+    svc.value.jobs.set_profile('free');svc.value.jobs.run_one()
+    result=svc.value.get('600034')
+    assert result['review']['status']=='complete'
+    assert result['assumptions']['confirmed'] is False
+    assert len(result['report']['valuation_cases'])==3
+    assert all(c['state']=='ready' for c in result['report']['valuation_cases'])
+    base=next(c for c in result['report']['valuation_cases'] if c['scenario']=='base')
+    # Calendar anniversaries use ACT/365.25 rather than integer years.
+    assert base['value_per_share']==pytest.approx(10,abs=.001)
+    assert base['capital_bridge']['years'][0]['dividend_shares']==8
+    assert result['report']['comparison']['conditional_price'] is None
+
+
 def test_only_delivered_citations_survive_and_one_call_is_counted(tmp_path):
     svc = value_service(tmp_path)
     snapshot = svc.value.capture('600034')
@@ -143,16 +258,30 @@ def test_heavy_current_statements_do_not_displace_annual_current_capital_or_peer
     svc=value_service(tmp_path);s=svc.value.capture('600034')
     for source,(mapping,index) in CONTRACTS.items():
         if index: continue
-        for period in ('2025-12-31','2026-09-30'):
+        for period in ('2025-09-30','2025-12-31','2026-09-30'):
             data=dict(SECUCODE='600034.SH',REPORT_DATE=period,NOTICE_DATE='2026-10-20')
             data.update({aliases[0]:float(i+100) for i,aliases in enumerate(mapping.values())})
             s['facts']+=normalize_value_statements('600034',[data],source,s['cutoff'])
+    for year in range(2020,2025):
+        for source,values in [('eastmoney/stock_profit_sheet_by_report_em',dict(TOTAL_OPERATE_INCOME=100*1.1**(year-2020),PARENT_NETPROFIT=20,OPERATE_PROFIT=25)),
+            ('eastmoney/stock_cash_flow_sheet_by_report_em',dict(NETCASH_OPERATE=30,CONSTRUCT_LONG_ASSET=5))]:
+            s['facts']+=normalize_value_statements('600034',[dict(SECUCODE='600034.SH',REPORT_DATE=f'{year}-12-31',NOTICE_DATE='2026-03-30',**values)],source,s['cutoff'])
+    from src.services.a_share_value_financials import build_financial_view
+    from src.services.a_share_value_strategy import build_value_strategy
+    s['financial_view']=build_financial_view(s['facts'],s['cutoff'])
+    s['economic_model']=dict(model='operating',allowed_methods=['fcff','ddm'])
     s['evidence']=[dict(id=f['fact_id'],source=f['source'],content=json.dumps(f,ensure_ascii=False)) for f in s['facts']]
-    text='我们认为，报表公允反映公司财务状况。所有权或使用权受限资产。'+'审计现金资金数据。'*600
+    text='我们认为，报表公允反映公司财务状况。'+'审计信息。'*180+'主营业务分产品'+'产品信息。'*180+'短期借款'+'债务信息。'*180+'所有权或使用权受限资产'+'受限信息。'*180+'现金流量表补充资料'+'现金信息。'*180
     s['events']=[dict(id=i,title=t,published_at=d,text_status='ready',text=text,kind='earnings') for i,t,d in [('ANNUAL','2025年年度报告','2026-03-31'),('Q3','2026年第三季度报告','2026-10-30'),('HALF','2026年半年度报告','2026-08-30'),('CAP','股份回购进展公告','2026-10-10')]]
     s['evidence'] += [dict(id=e['id'],source='cninfo',content=json.dumps(e)) for e in s['events']]
     s['evidence'] += [dict(id=f'DIV{i}',source='eastmoney/stock_fhps_detail_em',content=json.dumps(dict(report_period=f'202{i}-12-31',cash_per_share=2.5,description='详细历史分配资料'*200))) for i in range(9)]
     s['evidence'].append(dict(id='VALUE_PEERS',source='同行候选资料',content=json.dumps(dict(candidates=[dict(code=f'60000{i}',metrics=dict(pe=20,pb=2),metric_basis={}) for i in range(7)],confirmed=[]))))
+    s['evidence'].append(dict(id='VALUE_STRATEGY',source='derived',content=json.dumps(build_value_strategy(s),ensure_ascii=False)))
     p,sent,_=build_value_payload(s)
     assert {'ANNUAL','Q3','HALF','CAP','VALUE_PEERS'}<=sent
+    assert 'VALUE_STRATEGY' in sent
+    critical={'cash','assets','liabilities','parent_equity','minority_equity','short_debt','long_debt','bonds',
+        'lease_liabilities','noncurrent_due_within_year','treasury_share_cost'}
+    assert all(f['fact_id'] in sent for f in s['facts'] if f['report_period']=='2026-09-30' and f['metric'] in critical)
+    assert any(f['metric']=='revenue' and f['report_period']=='2021-12-31' and f['fact_id'] in sent for f in s['facts'])
     assert len(json.dumps([dict(role='system',content=PROMPT),dict(role='user',content=json.dumps(p,ensure_ascii=False))],ensure_ascii=False).encode())<=48000

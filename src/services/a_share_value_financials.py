@@ -38,6 +38,8 @@ def build_financial_view(facts, cutoff):
     years = sorted({period for _, period in selected if period.endswith('12-31')})[-10:]
     annual = [dict(period=period, metrics={metric: v for (metric, p), v in selected.items()
                 if p == period and v['period_basis'] in ('annual', 'instant')}) for period in years]
+    periods=[dict(period=period,metrics={metric:v for (metric,p),v in selected.items() if p==period})
+        for period in sorted({p for _,p in selected})]
     ttm = {}
     for metric, value in latest.items():
         if value['period_basis'] == 'annual':
@@ -68,7 +70,7 @@ def build_financial_view(facts, cutoff):
             current = None
     from src.services.a_share_value_context import normalized_history
     normalization = normalized_history(annual, ttm.get('revenue', {}).get('value'))
-    return dict(latest_period=latest_period, latest=latest, annual=annual, ttm=ttm, normalization=normalization,
+    return dict(latest_period=latest_period, latest=latest, annual=annual, periods=periods,ttm=ttm, normalization=normalization,
         current_capital=dict(value=current['value'], period=current['period_end'], available_at=current['available_at'],
             fact_ids=[current['fact_id']], unit='shares') if current else None,
         conflicts=conflicts, excluded=excluded, quality=dict(risks=risks, cash_profit_ratio=None,

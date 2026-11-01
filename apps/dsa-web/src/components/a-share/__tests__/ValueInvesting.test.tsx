@@ -7,8 +7,23 @@ import type {ValueResearchResult} from '../../../types/aShareValue';
 import type {ValueSnapshot} from '../../../types/aShareValue';
 import ValueAssumptionEditor from '../ValueAssumptionEditor';
 import type {ValueAssumptions} from '../../../types/aShareValue';
-vi.mock('../../../api/aShareMarket',()=>({aShareMarketApi:{getValue:vi.fn(),prepareValue:vi.fn(),generateValue:vi.fn()}}));
+vi.mock('../../../api/aShareMarket',()=>({aShareMarketApi:{getValue:vi.fn(),prepareValue:vi.fn(),generateValue:vi.fn(),saveValueAssumptions:vi.fn(),evaluateValue:vi.fn()}}));
 beforeEach(()=>vi.clearAllMocks());
+
+it('preserves value cards with free draft recalculation after saving monitoring without confirming valuation',async()=>{
+ let calculated=false;
+ vi.mocked(aShareMarketApi.getValue).mockImplementation(async code=>({code,status:'ready',snapshot:{snapshot_id:'s'},report:calculated?{valuation_state:'draft'}:null}) as ValueResearchResult);
+ vi.mocked(aShareMarketApi.saveValueAssumptions).mockResolvedValue({revision:1} as ValueAssumptions);
+ vi.mocked(aShareMarketApi.evaluateValue).mockImplementation(async()=>{calculated=true;return {} as Awaited<ReturnType<typeof aShareMarketApi.evaluateValue>>;});
+ const a={code:'605499',snapshot_id:'s',cases:[{method:'ddm',scenario:'base'}],monitor_rules:[{id:'r',metric:'revenue',operator:'lt',threshold:80,unit:'CNY',sources:['F1']}]} as ValueAssumptions;
+ function Harness(){const state=useValueResearch('605499');return <><button onClick={()=>void state.save(a,false)}>保存复核</button><p>{state.result?.report?'草案已重算':'待读取'}</p></>;}
+ render(<Harness/>);await waitFor(()=>expect(aShareMarketApi.getValue).toHaveBeenCalled());
+ fireEvent.click(screen.getByRole('button',{name:'保存复核'}));
+ await screen.findByText('草案已重算');
+ expect(aShareMarketApi.saveValueAssumptions).toHaveBeenCalledWith('605499','s',0,a,false,expect.any(AbortSignal));
+ expect(aShareMarketApi.evaluateValue).toHaveBeenCalledWith('605499','s',1,expect.any(AbortSignal));
+ expect(aShareMarketApi.generateValue).not.toHaveBeenCalled();
+});
 
 it('shows a numerical reference clearly separated from the incomplete AI valuation',()=>{
  const peers={candidates:[],confirmed:[],excluded:[],metrics:{}};
@@ -18,7 +33,9 @@ it('shows a numerical reference clearly separated from the incomplete AI valuati
  expect(screen.getAllByText('¥12.00')).toHaveLength(3);
  expect(screen.getByText('参数不是已验证预测')).toBeInTheDocument();
  expect(screen.getByText('AI尚缺完整资本核验')).toBeInTheDocument();
- expect(screen.getByText('暂停发布')).toBeInTheDocument();
+ expect(screen.getByText('要求折价对应价格（试算）')).toBeInTheDocument();
+ expect(screen.getByText('¥9.00')).toBeInTheDocument();
+ expect(screen.queryByText('满足要求折价的条件参考上限')).not.toBeInTheDocument();
  result.report={...result.reference!.report!,valuation_state:'stale',parameter_origin:'reference_sensitivity_v1'};
  result.reference=null;
  result.history=[{snapshot_id:'old',assumptions_revision:1,generated_at:'2026-10-30',primary_method:'ddm',parameter_origin:'reference_sensitivity_v1',valuation_cases:[]}];

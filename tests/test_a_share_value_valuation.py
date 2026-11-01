@@ -33,6 +33,41 @@ def test_terminal_year_is_recomputed():
     assert evaluate_method('fcff', case, {}, {})['terminal_value'] == pytest.approx(200)
 
 
+@pytest.mark.parametrize('terminal_nwc,expected', [(0,10.564473930053776),(.2,9.435526069946224)])
+def test_terminal_working_capital_reset_is_counted_once_not_perpetuated(terminal_nwc,expected):
+    case=operating_case();case['operating']['terminal']['nwc_ratio']=terminal_nwc
+    result=evaluate_method('fcff',case,{}, {})
+    assert result['state']=='ready'
+    assert result['value_per_share']==pytest.approx(expected)
+    assert result['recurring_terminal_value']==pytest.approx(100)
+    assert result['terminal_transition_cash']==pytest.approx(10 if terminal_nwc==0 else -10)
+
+
+@pytest.mark.parametrize('method',['fcff','fcfe','rim','nav'])
+def test_all_equity_methods_use_outside_shares_when_treasury_is_known(method):
+    case=operating_case(method)|dict(treasury_shares=2)
+    if method=='rim':case.update(book_equity=100,years=[dict(roe=.1,dividend=10,oci=0) for _ in range(5)],omega=0)
+    if method=='nav':case.update(assets=[dict(id='a',value=100)],liabilities=[],costs=0,complete=True)
+    view={'latest':{'treasury_share_cost':{'value':20}}}
+    result=evaluate_method(method,case,view,{})
+    assert result['state']=='ready'
+    assert result['value_per_share']==pytest.approx(12.5)
+    assert result['issued_shares']==10 and result['shares']==8
+    del case['treasury_shares']
+    assert evaluate_method(method,case,view,{})['state']=='blocked'
+
+
+def test_snapshot_date_binds_explicit_dividend_dates_and_rejects_a_different_anchor():
+    case=dict(method='ddm',scenario='base',shares=10,fixed_capital=True,discount=.1,terminal_growth=0,
+        dividends=[10]*5,terminal_dividend=10,capital_feasible=True,
+        payment_dates=['2027-04-30','2028-04-30','2029-04-30','2030-04-30','2031-04-30'])
+    anchor='2026-10-30'
+    result=evaluate_method('ddm',case,{}, {'valuation_date':anchor})
+    assert result['value_per_share']==pytest.approx(10.489479923,rel=1e-9)
+    assert evaluate_method('ddm',case,{}, {})['state']=='blocked'
+    assert evaluate_method('ddm',case|dict(start_date='2026-01-01'),{}, {'valuation_date':anchor})['state']=='blocked'
+
+
 @pytest.mark.parametrize('changes', [dict(discount=0), dict(terminal_growth=.095), dict(shares=0), dict(fixed_capital=False), dict(discount=True)])
 def test_invalid_inputs_are_blocked(changes):
     assert evaluate_method('fcff', operating_case() | changes, {}, {})['state'] == 'blocked'
