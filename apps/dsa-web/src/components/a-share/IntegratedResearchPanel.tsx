@@ -1,8 +1,9 @@
+import {useMarketPresentation,currencyMark,currencyLabel} from './MarketContext';
 import { useState } from 'react';
 import type { IntegratedResearchResult } from '../../types/aShareMarket';
 import { integratedResearchStatus } from './integratedResearchStatus';
 
-const money=(n:number|null|undefined)=>n!=null&&Number.isFinite(n)?`¥${n.toFixed(2)}`:'依据不足';
+const formatMoney=(n:number|null|undefined)=>n!=null&&Number.isFinite(n)?`¥${n.toFixed(2)}`:'依据不足';
 const percent=(n:unknown)=>typeof n==='number'&&Number.isFinite(n)?`${(n*100).toFixed(2)}%`:'未取得';
 const safe=(url:unknown)=>{try{const u=new URL(String(url));return ['https:','http:'].includes(u.protocol)?u.href:undefined;}catch{return undefined;}};
 const names:Record<string,string>={financial:'财报与业绩',valuation:'估值',disclosures:'公司公告',news:'新闻与政策',technical:'技术与完整日线',industry:'行业归属',liquidity:'成交额与流动性',chips:'筹码',ready:'已取得',partial:'部分取得',mixed_types:'不同报表口径，分开核对',missing:'缺失',failed:'失败',ok:'已完成',skipped:'资料不足，已跳过',trend_pullback:'趋势回踩',range_reversion:'区间回归',event_followthrough:'事件跟踪',observe:'观察',conditional:'条件成立后观察'};
@@ -22,6 +23,8 @@ export default function IntegratedResearchPanel({result,error,message,busy=false
   result?:IntegratedResearchResult;error?:string;message?:string;busy?:boolean;horizon:number;onHorizon:(h:number)=>void;
   onPrepare:(offset?:number)=>void;onGenerate:(force:boolean)=>void;onHighlight?:(id:string)=>void;overlayMatched?:boolean;controls?:boolean;
 }) {
+ const {currency}=useMarketPresentation();const money=(n:number|null|undefined)=>formatMoney(n).replace('¥',currencyMark(currency));
+
   const outcome=integratedResearchStatus(result?.report,horizon);
   const report=result?.report,bundle=result?.bundle,working=busy||result?.status==='preparing'||result?.status==='running';
   const [peerBatch,setPeerBatch]=useState({code:result?.code,offset:20});
@@ -35,7 +38,7 @@ export default function IntegratedResearchPanel({result,error,message,busy=false
   const diagnostics=bundle?.cases?.diagnostics;
   const validation=result?.validation,measured=validation?.horizons[String(horizon)],comparison=validation?.comparison.horizons[String(horizon)];
   return <section role="region" aria-label="综合预测与策略" className="am-integrated">
-    <header className="as-section-heading"><div><p className="as-eyebrow">多维资料 · 多专家复核</p><h2>综合预测与策略</h2><p className="as-footnote">研究估计，尚未校准 · 价位均为人民币不复权参考</p></div>{controls?<label>综合研究期限<select aria-label="综合研究期限" value={horizon} onChange={e=>onHorizon(Number(e.target.value))}>{[5,20,60].map(h=><option value={h} key={h}>{h}交易日</option>)}</select></label>:<span>{horizon}交易日 · 研究详情</span>}</header>
+    <header className="as-section-heading"><div><p className="as-eyebrow">多维资料 · 多专家复核</p><h2>综合预测与策略</h2><p className="as-footnote">研究估计，尚未校准 · 价位均为{currencyLabel(currency)}不复权参考</p></div>{controls?<label>综合研究期限<select aria-label="综合研究期限" value={horizon} onChange={e=>onHorizon(Number(e.target.value))}>{[5,20,60].map(h=><option value={h} key={h}>{h}交易日</option>)}</select></label>:<span>{horizon}交易日 · 研究详情</span>}</header>
     {controls&&<div className="am-toolbar"><button className="am-button" disabled={working} onClick={()=>onPrepare()}>更新研究资料</button><button className="am-primary" disabled={working} onClick={()=>onGenerate(false)}>生成综合预测</button>{report&&<button className="am-button" disabled={working} onClick={()=>onGenerate(true)}>重新生成（按用量计费）</button>}</div>}
     <p className="as-footnote">资料准备不调用AI；完整研究最多6类专家，按实际调用计费。手动生成不限每日次数，看图和切换期限不调用模型。</p>
     {error&&<p role="alert">{error}</p>}{message&&<p role="status">{message}</p>}

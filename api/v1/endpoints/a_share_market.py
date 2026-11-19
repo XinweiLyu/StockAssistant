@@ -80,6 +80,23 @@ def sectors(kind:Literal['industry','concept']='industry',classification:str|Non
     if period not in (0,5,20,60): raise HTTPException(422,'期间仅支持0/5/20/60交易日')
     return invoke(lambda s:s.market.sectors(SectorQuery(kind=kind,classification=classification,period=period)))
 
+@router.get('/sectors/fund-flow-comparison')
+def sector_flow_comparison(kind:Literal['industry','concept']='industry',ids:str=Query('',max_length=600),refresh:bool=False):
+    selected=ids.split(',') if ids else []
+    return invoke(lambda s:s.market.fund_flow.comparison(kind,selected,refresh))
+
+@router.get('/sectors/fund-flow-rankings')
+def fund_flow_rankings(kind:Literal['industry','concept']='industry'):
+    return invoke(lambda s:s.market.fund_flow.rankings(kind))
+
+@router.get('/sectors/{sector_id}/fund-flow')
+def sector_fund_flow(sector_id:str,period:int=0):
+    return invoke(lambda s:s.market.fund_flow.get(sector_id,period))
+
+@router.post('/sectors/{sector_id}/fund-flow/refresh')
+def refresh_sector_fund_flow(sector_id:str,period:int=0):
+    return invoke(lambda s:s.market.fund_flow.get(sector_id,period,refresh=True))
+
 @router.get('/sectors/{sector_id}/members')
 def members(sector_id:str,query:CatalogQuery=Depends(),refresh:bool=False):
     return invoke(lambda s:s.market.members(sector_id,query,refresh=refresh),True)

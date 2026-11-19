@@ -40,6 +40,28 @@ except ImportError:
 # Market -> exchange code (exchange-calendars)
 MARKET_EXCHANGE = {"cn": "XSHG", "hk": "XHKG", "us": "XNYS", "jp": "XTKS", "kr": "XKRX", "tw": "XTAI"}
 
+
+# Official exceptional full-day closures absent from some exchange-calendars
+# releases. Never infer a closure from a missing vendor candle. Since 2024-09-23
+# HKEX severe-weather trading continues; these are dated corrections only.
+EXCEPTIONAL_CLOSURES = {
+    "hk": {
+        date(2023, 9, 1): "https://www.hkex.com.hk/News/Market-Communications/2023/2309012news?sc_lang=en",
+        date(2023, 9, 8): "https://www.hkex.com.hk/News/Market-Communications/2023/2309083news?sc_lang=en",
+    },
+}
+
+
+def _exceptional_closure(market, day):
+    return day in EXCEPTIONAL_CLOSURES.get(market, {})
+
+
+def _previous_open_session(cal, market, day):
+    session = cal.date_to_session(day, direction="previous")
+    while _exceptional_closure(market, session.date()):
+        session = cal.previous_session(session)
+    return session
+
 # Market -> IANA timezone for "today"
 MARKET_TIMEZONE = {
     "cn": "Asia/Shanghai",
@@ -161,6 +183,8 @@ def is_market_open(market: str, check_date: date) -> bool:
     Returns:
         True if trading day (or fail-open), False otherwise
     """
+    if _exceptional_closure(market, check_date):
+        return False
     if not _XCALS_AVAILABLE:
         return True
     ex = MARKET_EXCHANGE.get(market)
@@ -184,7 +208,8 @@ def get_trading_dates(market: str, start_date: date, end_date: date) -> Optional
         return None
     try:
         sessions = xcals.get_calendar(MARKET_EXCHANGE[market]).sessions_in_range(start_date, end_date)
-        return sessions.tz_localize(None).normalize()
+        sessions = sessions.tz_localize(None).normalize()
+        return sessions[[not _exceptional_closure(market, d.date()) for d in sessions]]
     except Exception as exc:
         logger.warning("trading_calendar.get_trading_dates unavailable: %s", exc)
         return None
@@ -205,10 +230,25 @@ def get_next_trading_date(market: str, check_date: date) -> Optional[date]:
         return None
     try:
         cal = xcals.get_calendar(ex)
-        return cal.date_to_session(check_date + timedelta(days=1), direction="next").date()
+        session = cal.date_to_session(check_date + timedelta(days=1), direction="next")
+        while _exceptional_closure(market, session.date()):
+            session = cal.next_session(session)
+        return session.date()
     except Exception as e:
         logger.warning("trading_calendar.get_next_trading_date unavailable: %s", e)
         return None
+
+
+def completed_daily_bar_close(market, calendar, session):
+    """Conservative completion bound for numerical research, including HK CAS.
+
+    HKEX CAS ends randomly by 16:10 (12:10 on half-days). Without a verified
+    per-security CAS flag, wait for the latest possible close for every HK bar.
+    This does not change legacy regular-session phase labels.
+    https://www.hkex.com.hk/en/Services/Trading-hours-and-Severe-Weather-Arrangements/Trading-Hours/Securities-Market?sc_lang=en
+    """
+    close=calendar.session_close(session)
+    return close+timedelta(minutes=10) if market=='hk' else close
 
 
 def get_market_now(
@@ -263,8 +303,8 @@ def get_effective_trading_date(
         cal = xcals.get_calendar(ex)
         local_date = market_now.date()
 
-        if not cal.is_session(local_date):
-            return cal.date_to_session(local_date, direction="previous").date()
+        if not cal.is_session(local_date) or _exceptional_closure(market, local_date):
+            return _previous_open_session(cal, market, local_date).date()
 
         session = cal.date_to_session(local_date, direction="previous")
         session_close = cal.session_close(session)
@@ -278,7 +318,7 @@ def get_effective_trading_date(
         if market_now >= close_local:
             return session.date()
 
-        return cal.previous_session(session).date()
+        return _previous_open_session(cal, market, cal.previous_session(session).date()).date()
     except Exception as e:
         logger.warning("trading_calendar.get_effective_trading_date fail-open: %s", e)
         return fallback_date
@@ -311,7 +351,7 @@ def resolve_historical_daily_bar_date(
 
     try:
         cal = xcals.get_calendar(MARKET_EXCHANGE[market])
-        is_session = bool(cal.is_session(target_date))
+        is_session = bool(cal.is_session(target_date)) and not _exceptional_closure(market, target_date)
 
         if normalized_phase in {
             "premarket",
@@ -322,14 +362,14 @@ def resolve_historical_daily_bar_date(
             if not is_session:
                 return None
             session = cal.date_to_session(target_date, direction="previous")
-            return cal.previous_session(session).date()
+            return _previous_open_session(cal, market, cal.previous_session(session).date()).date()
 
         if normalized_phase == "postmarket":
             return target_date if is_session else None
 
         if is_session:
             return None
-        return cal.date_to_session(target_date, direction="previous").date()
+        return _previous_open_session(cal, market, target_date).date()
     except Exception as e:
         logger.warning(
             "trading_calendar.resolve_historical_daily_bar_date fail-closed: %s",
@@ -400,7 +440,7 @@ def infer_market_phase(
 
     try:
         cal = xcals.get_calendar(ex)
-        if not cal.is_session(local_date):
+        if not cal.is_session(local_date) or _exceptional_closure(market, local_date):
             return MarketPhase.NON_TRADING
 
         session = cal.date_to_session(local_date, direction="previous")

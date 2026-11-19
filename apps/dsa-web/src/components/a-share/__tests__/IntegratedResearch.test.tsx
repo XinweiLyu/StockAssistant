@@ -1,3 +1,4 @@
+import {MarketContext} from '../MarketContext';
 import { render,screen,fireEvent,renderHook,waitFor,act } from '@testing-library/react';
 import { vi,it,expect,beforeEach } from 'vitest';
 import IntegratedResearchPanel from '../IntegratedResearchPanel';
@@ -193,4 +194,10 @@ it('explains zero samples separately from missing text and shows continuing even
   expect(screen.getByText(/待补正文 812/)).toBeInTheDocument();
   expect(screen.getByText(/已过60个交易日/)).toBeInTheDocument();
   expect(screen.getByText(/继续核查业绩兑现/)).toBeInTheDocument();
+});
+
+it('labels the offshore price reference in the actual quote currency',()=>{
+ render(<MarketContext.Provider value={{market:'us',currency:'USD',financialCurrency:'USD'}}><IntegratedResearchPanel horizon={20} onHorizon={()=>{}} onPrepare={()=>{}} onGenerate={()=>{}}/></MarketContext.Provider>);
+ expect(screen.getByText(/价位均为美元不复权参考/)).toBeInTheDocument();
+ expect(screen.queryByText(/价位均为人民币不复权参考/)).not.toBeInTheDocument();
 });

@@ -1,3 +1,4 @@
+import {MarketContext} from '../MarketContext';
 import {render,screen,fireEvent} from '@testing-library/react';
 import {it,expect,vi} from 'vitest';
 import ResearchWorkspaceToolbar from '../ResearchWorkspaceToolbar';
@@ -67,4 +68,10 @@ it('explains an intentionally withheld forecast without calling it a model failu
  expect(screen.getByText(/未发布预测价位/)).toBeInTheDocument();
  expect(screen.queryByText(/价位生成失败/)).not.toBeInTheDocument();
  expect(screen.getByRole('region',{name:'未来情景预测区间'})).toHaveTextContent('没有通过校验');
+});
+
+it('formats offshore future scenario cards in quote currency',()=>{
+ render(<MarketContext.Provider value={{market:'us',currency:'USD',financialCurrency:'USD'}}><ResearchWorkspaceToolbar result={integratedFixture()} horizon={20} onHorizon={()=>{}} onPrepare={()=>{}} onGenerate={()=>{}}/></MarketContext.Provider>);
+ expect(screen.getAllByText(/US\$/).length).toBeGreaterThan(0);
+ expect(screen.queryByText(/¥/)).not.toBeInTheDocument();
 });

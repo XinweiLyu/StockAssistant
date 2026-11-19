@@ -1,8 +1,8 @@
+import {useMarketPresentation,currencyMark} from './MarketContext';
 import type { IntegratedResearchResult } from '../../types/aShareMarket';
 import { integratedResearchStatus } from './integratedResearchStatus';
 import type {ResearchScope,ValueResearchResult} from '../../types/aShareValue';
 const roles=['市场与行业','业绩与估值','事件与历史案例','价格与流动性','风险复核','综合经理'];
-const money=(value:number)=>`¥${value.toFixed(2)}`;
 const duration=(value:number)=>{const seconds=Math.max(0,Math.floor(value));return `${Math.floor(seconds/60)}分${seconds%60}秒`;};
 const statusName:Record<string,string>={pending:'待处理',running:'进行中',ok:'已完成',failed:'失败',skipped:'资料不足，跳过',insufficient:'已处理，依据不足',budget_exhausted:'自动预算不足'};
 export default function ResearchWorkspaceToolbar({result,error,message,busy=false,loading=false,horizon,onHorizon,onPrepare,onGenerate,overlayMatched=false,scope='trading',onScope,valueStatus,valueProgress,valueBusy=false}: {
@@ -10,6 +10,8 @@ export default function ResearchWorkspaceToolbar({result,error,message,busy=fals
  onHorizon:(value:number)=>void;onPrepare:()=>void;onGenerate:(force:boolean)=>void;overlayMatched?:boolean;
  scope?:ResearchScope;onScope?:(scope:ResearchScope)=>void;valueStatus?:string;valueProgress?:ValueResearchResult['progress'];valueBusy?:boolean;
 }) {
+ const {currency}=useMarketPresentation();
+ const money=(value:number)=>`${currencyMark(currency)}${value.toFixed(2)}`;
  const report=result?.report,p=result?.progress;
  const outcome=integratedResearchStatus(report,horizon);
  const working=(scope!=='value'&&(busy||result?.status==='preparing'||result?.status==='running'))||(scope!=='trading'&&valueBusy);

@@ -1,7 +1,8 @@
+import {useMarketPresentation,currencyMark} from './MarketContext';
 import type { QuantOutlook } from '../../types/aShareMarket';
 import { isConditionalPlan } from './priceChartData';
 
-const money=(value:number|null|undefined)=>value==null||!Number.isFinite(value)?'资料不足':`¥${value.toFixed(2)}`;
+const formatMoney=(value:number|null|undefined)=>value==null||!Number.isFinite(value)?'资料不足':`¥${value.toFixed(2)}`;
 const percent=(value:number|null|undefined)=>value==null||!Number.isFinite(value)?'资料不足':`${(value*100).toFixed(1)}%`;
 const samples=(value:number|null|undefined)=>value!=null&&Number.isInteger(value)&&value>=0?`${value} 个`:'资料不足';
 const state={up:'向上',down:'向下',range:'震荡',unknown:'未知',insufficient:'资料不足'};
@@ -10,6 +11,8 @@ const safeUrl=(value:string|null)=>{try{const url=new URL(value||'');return ['ht
 export default function QuantOutlookPanel({result,error,loading,horizon,minRewardRisk,onHorizon,onMinRewardRisk,onRetry,showFan,onShowFan,overlayMatched}:{
   result?:QuantOutlook;error?:string;loading:boolean;horizon:number;minRewardRisk:number;onHorizon:(value:number)=>void;onMinRewardRisk:(value:number)=>void;onRetry:()=>void;showFan:boolean;onShowFan:(value:boolean)=>void;overlayMatched:boolean;
 }) {
+ const {currency}=useMarketPresentation();const money=(n:number|null|undefined)=>formatMoney(n).replace('¥',currencyMark(currency));
+
   const forecast=result?.forecasts.find(item=>item.horizon_sessions===horizon),plan=result?.plan;
   const available=result&&['ready','partial'].includes(result.status);
   const conditional=available&&plan&&isConditionalPlan(plan,minRewardRisk);

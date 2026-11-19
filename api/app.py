@@ -308,6 +308,8 @@ async def app_lifespan(app: FastAPI):
     try:
         yield
     finally:
+        from api.v1.endpoints.market_workspace import stop_workspace_services
+        stop_workspace_services()
         if assistant is not None:
             assistant.stop()
         refresh_task = getattr(app.state, "stock_index_refresh_task", None)

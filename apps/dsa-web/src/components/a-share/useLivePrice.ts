@@ -35,6 +35,15 @@ export function useLivePrice(code:string,onReady:(result:LivePriceResult)=>void)
     setSaved(previous=>({code,state:'pending',result:previous?.code===code?previous.result:undefined}));
     setRevision(value=>value+1);
   },[code]);
+  useEffect(()=>{
+    if(!/^(us|hk):/.test(code))return;
+    let checked=Date.now();
+    const check=()=>{if(document.visibilityState==='visible'){checked=Date.now();refresh();}};
+    const timer=setInterval(check,300000);
+    const visible=()=>{if(document.visibilityState==='visible'&&Date.now()-checked>=300000)check();};
+    document.addEventListener('visibilitychange',visible);
+    return()=>{clearInterval(timer);document.removeEventListener('visibilitychange',visible);};
+  },[code,refresh]);
   const current=saved?.code===code?saved:undefined;
   return {result:current?.result,state:current?.state,error:current?.error,loading:!!code&&(!current||current.state==='pending'),refresh};
 }

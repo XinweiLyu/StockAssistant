@@ -950,6 +950,16 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         ],
         "warning_codes": ["provider_priority_order"],
     },
+    "SEC_USER_AGENT": {
+        "title": "SEC 公开资料访问标识",
+        "description": "可选；填写真实的应用名称与联系标识，用于 SEC 财报与申报目录。留空仍可使用供应商财报，并明确显示 SEC 覆盖缺口。",
+        "category": "data_source", "data_type": "string", "ui_control": "text",
+        "is_sensitive": False, "is_required": False, "is_editable": True,
+        "default_value": "", "options": [], "validation": {}, "display_order": 17,
+        "help_key": "settings.data_source.SEC_USER_AGENT",
+        "examples": ["SEC_USER_AGENT=ApplicationName real-contact-identifier"],
+        "docs": [{"label": "SEC Developer Resources", "href": "https://www.sec.gov/about/developer-resources"}],
+    },
     "STOCK_INDEX_REMOTE_UPDATE_ENABLED": {
         "title": "Remote Stock Index Updates",
         "description": "Automatically refresh the local stock autocomplete index from the built-in GitHub main source.",

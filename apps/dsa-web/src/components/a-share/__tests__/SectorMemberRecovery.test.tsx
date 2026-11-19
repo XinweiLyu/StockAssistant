@@ -3,7 +3,7 @@ import {afterEach,beforeEach,expect,it,vi} from 'vitest';
 import {aShareMarketApi} from '../../../api/aShareMarket';
 import type {Sector} from '../../../types/aShareMarket';
 import SectorDetail from '../SectorDetail';
-vi.mock('../../../api/aShareMarket',()=>({aShareMarketApi:{members:vi.fn()}}));
+vi.mock('../../../api/aShareMarket',()=>({aShareMarketApi:{members:vi.fn(),fundFlow:vi.fn(async(id:string)=>({sector:{sector_id:id},points:[],task_ids:[],member_flows:[],health:{},summary:{covered:0},active:false}))}}));
 beforeEach(()=>{vi.useFakeTimers();});
 afterEach(()=>{cleanup();vi.useRealTimers();vi.clearAllMocks();});
 it('shows board-member source errors and the retry button performs a fresh fetch',async()=>{

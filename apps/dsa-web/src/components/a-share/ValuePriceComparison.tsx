@@ -1,15 +1,18 @@
+import {currencyMark} from './MarketContext';
 import {useState} from 'react';
 import type {ValueReport,ValueResearchResult} from '../../types/aShareValue';
 
-const money=(n:number)=>`¥${n.toFixed(2)}`;
+const formatMoney=(n:number)=>`¥${n.toFixed(2)}`;
 const percent=(n:number)=>Number.isFinite(n*100)?`${(n*100).toFixed(1)}%`:'计算结果超出范围，请核对输入';
 const finite=(n:unknown):n is number=>typeof n==='number'&&Number.isFinite(n);
 
 export default function ValuePriceComparison({report,quote,marginRequired,reference,stale}:{
  report?:ValueReport;quote?:ValueResearchResult['quote'];marginRequired?:number|null;reference:boolean;stale:boolean;
 }){
+ const money=(n:number)=>formatMoney(n).replace('¥',currencyMark(report?.listing?.quote_currency||report?.currency||'CNY'));
  const [priceInput,setPriceInput]=useState<string|null>(null);
  const [discountInput,setDiscountInput]=useState<string|null>(null);
+ if(reference&&report?.market&&report.market!=='cn'&&!report.listing?.ready)return <p>上市股权或汇率绑定尚未核实，暂停跨币种参考比较。</p>;
  if(!reference){
   const c=report?.comparison;
   const reason=stale?'资料已变化，请先更新研究':c?.reason||'尚无通过核验的比较结果，请查看研究状态与具体缺口';
@@ -21,7 +24,8 @@ export default function ValuePriceComparison({report,quote,marginRequired,refere
  }
  if(stale||report?.valuation_state==='stale')return <p className="am-integrated-warning">资料已变化，请先更新研究</p>;
  if(report?.valuation_state==='disputed')return <p className="am-integrated-warning">试算情景存在争议，请先核对假设</p>;
- const conservative=report?.valuation_cases.find(c=>c.method===report.primary_method&&c.scenario==='conservative'&&c.state==='ready')?.value_per_share;
+ const conservativeCase=report?.valuation_cases.find(c=>c.method===report.primary_method&&c.scenario==='conservative'&&c.state==='ready');
+ const conservative=report?.market&&report.market!=='cn'?conservativeCase?.quote_value_per_share:conservativeCase?.value_per_share;
  const value=finite(conservative)&&conservative>0?conservative:null;
  const cached=finite(quote?.price)&&quote.price>0?quote.price:null;
  const priceText=priceInput??(cached==null?'':String(cached));

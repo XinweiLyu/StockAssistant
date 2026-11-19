@@ -115,17 +115,17 @@ class OutlookService:
             for basis, cached in [('raw', raw), ('qfq', adjusted)]:
                 if refresh or not cached or cached['requested_start'] > start or cached['requested_end'] < end:
                     states.append(market.history(code, start, end, basis, refresh).state)
-        benchmark = market.repo.get_history(profile, 'benchmark:000300', 'raw', '1900-01-01', end)
+        benchmark = market.repo.get_history(profile, getattr(market,'benchmark_entity','benchmark:000300'), 'raw', '1900-01-01', end)
         if profile != 'demo' and (refresh or not benchmark or benchmark['requested_start'] > start or benchmark['requested_end'] < end):
             states.append(market.benchmark_history(start, end, refresh).state)
         groups = market.repo.associations(profile, [code]).get(code, [])
         industries = [g for g in groups if g['kind'] == 'industry'
-                      and g['classification'] == 'eastmoney-industry']
+                      and g['classification'] == getattr(market,'industry_classification','eastmoney-industry')]
         sector = None
         # Ambiguous classifications do not become an invented industry benchmark.
         if len(industries) == 1:
             sector = market.repo.get_history(profile, industries[0]['sector_id'], 'raw', '1900-01-01', end)
-            if profile != 'demo' and (refresh or not sector or sector['requested_start'] > start or sector['requested_end'] < end):
+            if profile != 'demo' and not getattr(market,'market_name',None) and (refresh or not sector or sector['requested_start'] > start or sector['requested_end'] < end):
                 states.append(market.sector_history(industries[0]['sector_id'], start, end, refresh).state)
         return raw, adjusted, benchmark, sector, states
 
@@ -194,9 +194,12 @@ class OutlookService:
         if not stock.get('identity_verified'):
             result['plan']['status'] = 'observe'
             result['plan']['reasons'].append('证券身份未核实，不能生成新增买入条件')
-        if stock.get('st') is not False or stock.get('board') != 'main':
+        if not getattr(market,'market_name',None) and (stock.get('st') is not False or stock.get('board') != 'main'):
             result['plan']['status'] = 'observe'
             result['plan']['reasons'].append('ST状态或主板资格未满足当前新增买入范围')
+        if getattr(market,'market_name',None) and stock.get('asset_type')!='stock':
+            result['plan']['status']='observe'
+            result['plan']['reasons'].append('尚未核实为普通企业股权，暂停新增买入条件')
         if material_risk:
             result['plan']['status'] = 'observe'
             result['plan']['reasons'].append('已核实重大风险，新增买入条件暂停')
@@ -207,4 +210,6 @@ class OutlookService:
             '区间覆盖率和价格误差不是交易胜率；未经过组合收益回测',
             '除权除息及未来公司行动可能改变实际价格；止损参考不保证成交',
         ]))
+        if getattr(market,'market_name',None):
+            result.update(market=market.market_name,currency=stock.get('currency'))
         return result

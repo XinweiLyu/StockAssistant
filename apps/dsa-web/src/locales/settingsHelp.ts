@@ -268,6 +268,14 @@ const settingsHelpZhCN: SettingsHelpMap = {
     impact: ['影响 OpenAI-compatible legacy 配置路径下的模型请求。'],
     notes: ['渠道模式下优先维护各渠道自己的 LLM_<NAME>_BASE_URL。'],
   },
+  'settings.data_source.SEC_USER_AGENT': {
+    title: 'SEC公开资料访问标识',
+    summary: '可选的美国官方财报与申报目录访问标识。',
+    usage: '填写真实应用名称和联系标识，遵循SEC自动访问政策。',
+    valueNotes: ['无需API Key；留空仍可使用供应商财报，但官方来源会标记缺口。'],
+    impact: ['影响美股官方标准标签财报及公告原文覆盖。'],
+    notes: ['不虚构联系方式；不影响A股数据源。'],
+  },
   'settings.data_source.TUSHARE_TOKEN': {
     title: 'Tushare Token',
     summary: '用于访问 Tushare Pro 数据接口。',
@@ -1514,6 +1522,14 @@ const settingsHelpEnUS: SettingsHelpMap = {
     valueNotes: ['The Base URL must match the API key provider.', 'Gemini or Anthropic official paths usually do not use OPENAI_BASE_URL.'],
     impact: ['Affects legacy OpenAI-compatible model calls.'],
     notes: ['In channel mode, prefer each channel-specific LLM_<NAME>_BASE_URL.'],
+  },
+  'settings.data_source.SEC_USER_AGENT': {
+    title: 'SEC public-data access identity',
+    summary: 'Optional application and contact identity for US official filings.',
+    usage: 'Enter a real application name and contact identifier following SEC access policy.',
+    valueNotes: ['No API key is required. An empty value keeps vendor statements available with an explicit official-source gap.'],
+    impact: ['Affects US standard-tag financials and original filing coverage.'],
+    notes: ['Do not invent contact details. A-share sources are unchanged.'],
   },
   'settings.data_source.TUSHARE_TOKEN': {
     title: 'Tushare Token',

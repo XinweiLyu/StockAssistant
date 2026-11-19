@@ -7,10 +7,10 @@ class PriceModel(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
 
 class PriceContext(PriceModel):
-    code: str = Field(pattern=r'^(\d{6}|DEMO\d{3})$')
+    code: str = Field(pattern=r'^(\d{6}|DEMO\d{3}|us:[A-Z][A-Z0-9]*(?:[.\-][A-Z0-9]+)?|hk:\d{5})$')
     anchor_date: str = Field(pattern=r'^\d{4}-\d{2}-\d{2}$')
     reference_price: Price = Field(gt=0, strict=True)
-    currency: Literal['CNY'] = 'CNY'
+    currency: str = Field(default='CNY',pattern=r'^[A-Z]{3}$')
     price_basis: Literal['raw'] = 'raw'
     data_hash: str
     adjustment_basis: str
@@ -19,6 +19,12 @@ class PriceContext(PriceModel):
     qfq_anchor: float | None = None
     source: str | None = None
     demo: bool = False
+
+    @model_validator(mode='after')
+    def market_currency(self):
+        if not self.code.startswith(('us:','hk:')) and self.currency!='CNY':
+            raise ValueError('A股原价位上下文仅接受人民币')
+        return self
 
 class AITradeLevels(PriceModel):
     horizon_sessions: Literal[5,10,20]

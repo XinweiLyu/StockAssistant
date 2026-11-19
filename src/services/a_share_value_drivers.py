@@ -70,6 +70,7 @@ def apply_driver_changes(snapshot, assumptions):
                 if change.get('method') and change['method']!=case.get('method'):continue
                 if change.get('scenario') and change['scenario']!=case.get('scenario'):continue
                 targets,unit=_targets(case,field,change,sorted(set(years)))
+                if unit=='CNY':unit=s.get('currency','CNY')
                 if targets and change.get('unit')!=unit:raise ValueError('事件单位与所选估值方法字段不符')
                 for parent,key,year in targets:
                     token=(family,field,change.get('item_id'),index,year)

@@ -12,17 +12,18 @@ def _actual(snapshot,metric,period):
     if current==period:ttm=view.get('ttm',{});latest=view.get('latest',{})
     else:
         periods={r['period']:r['metrics'] for r in view.get('periods',view.get('annual',[]))}
-        latest=periods.get(period,{});ttm={};year=int(period[:4])-1
-        for key,f in latest.items():
-            if f.get('period_basis')=='annual':ttm[key]=f
-            elif f.get('period_basis')=='ytd':
-                prior=periods.get(str(year)+period[4:],{}).get(key);annual=periods.get(f'{year}-12-31',{}).get(key)
-                if prior and annual and prior.get('period_basis')=='ytd' and annual.get('period_basis')=='annual' and all(all(v.get(k)==f.get(k) for k in ('unit','scope','vendor','attribution')) for v in (prior,annual)):
-                    ttm[key]=f|dict(value=f['value']+annual['value']-prior['value'],fact_ids=f['fact_ids']+annual['fact_ids']+prior['fact_ids'],formula='YTD+previous_annual-previous_YTD')
+        from src.services.a_share_value_financials import financial_ttm
+        latest=periods.get(period,{})
+        selected={(key,p):f for p,values in periods.items() for key,f in values.items()}
+        segments=[(r['metric'],r) for r in view.get('flow_segments',[])]
+        if not segments:segments=[(key,f) for (key,_),f in selected.items() if f.get('period_basis') in ('quarter','half_year')]
+        ttm=financial_ttm(selected,segments,period)
     if metric in ('revenue','net_profit','operating_cashflow','capex'):
         f=ttm.get(metric,{})
-        basis_ok=(f.get('period_basis')=='annual' if period.endswith('12-31') else
-            f.get('period_basis')=='ytd' and f.get('formula')=='YTD+previous_annual-previous_YTD')
+        basis_ok=(f.get('period_basis')=='annual' or
+            f.get('period_basis')=='ytd' and f.get('formula')=='YTD+previous_annual-previous_YTD' or
+            f.get('period_basis')=='quarter' and f.get('formula')=='sum_contiguous_4_quarter' or
+            f.get('period_basis')=='half_year' and f.get('formula')=='sum_contiguous_2_half_year')
         if not basis_ok or not amounts(ttm,[metric],period):return None,None,[]
         return f.get('value'),f.get('unit'),f.get('fact_ids',[])
     e=build_economic_analysis(view|dict(latest_period=period,latest=latest,ttm=ttm),snapshot.get('economic_model',{}).get('model','unresolved'))

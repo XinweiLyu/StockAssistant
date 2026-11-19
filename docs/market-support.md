@@ -136,3 +136,8 @@ Portfolio 允许 JP/KR 账户、交易和持仓快照进入现有链路，但会
 - Web UI 可视证据口径：Market Light 告警目标范围切到“大盘市场”时，市场区域下拉只显示 A 股、港股、美股，不显示日股/韩股；设置页 `MARKET_REVIEW_REGION` 渲染为可输入逗号分隔值的文本框。当前仓库不保存一次性截图证据，可替代证据为 `apps/dsa-web/src/components/alerts/__tests__/AlertRuleForm.test.tsx`、`apps/dsa-web/src/components/settings/__tests__/SettingsField.test.tsx` 和 `apps/dsa-web/tests/system_config_i18n.test.ts` 的断言。
 
 回滚方式：移除 Portfolio snapshot 的 `data_quality` / `limitations` 扩展，恢复告警前端/后端对市场枚举的旧边界说明；如需整体回滚，移除 `jp/kr` 市场识别、交易日历注册、YFinance 路由扩展、Web/API 类型放行、`scripts/stock_index_seeds/` 日韩种子索引，并删除本文档中的能力声明。
+
+
+## Unified trading assistant workspace
+
+The assistant now includes market-qualified CN/HK/US navigation, catalog search and watchlists, raw/provider-adjusted candles, manual and five-minute visible quote checks, shared six-expert forecasts and the value workflow. Offshore industry membership covers verified companies only; no complete industry index or concept feed is implied. Yahoo financial statements are current-vintage observations. Optional `SEC_USER_AGENT` enables US standard-tag official filings; HKEX discovery uses configured search and verified original documents, not a complete filing archive. Native financial currency, FX date/direction, listing entitlement and capital-action coverage gate all quote-level comparisons. Missing official evidence, historical industry membership or capital data remains partial. See [setup and limitations](multi-market-assistant.md).

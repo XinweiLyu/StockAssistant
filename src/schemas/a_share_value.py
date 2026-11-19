@@ -1,6 +1,7 @@
 """Current-vintage value research; separate from short-term price forecasts."""
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, field_validator, model_validator
+from src.schemas.market_workspace import CODE_PATTERN
 
 VERSION = 'value-research-v4'
 
@@ -9,17 +10,33 @@ class ValueModel(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
 
 
-class ValueFact(ValueModel):
+class InstrumentValueModel(ValueModel):
+    market: Literal['cn','hk','us'] = 'cn'
+    currency: str = Field(default='CNY',pattern=r'^[A-Z]{3}$')
+
+    @model_validator(mode='before')
+    @classmethod
+    def explicit_offshore_identity(cls,value):
+        if isinstance(value,dict):
+            code=str(value.get('code',''))
+            if code.startswith(('us:','hk:')):
+                if value.get('market')!=code.split(':')[0] or not value.get('currency'):
+                    raise ValueError('港美股记录必须明确提供市场与货币，不能继承A股默认值')
+            elif value.get('market','cn')!='cn':
+                raise ValueError('港美股记录必须使用包含市场的证券身份')
+        return value
+
+
+class ValueFact(InstrumentValueModel):
     fact_id: str
-    code: str = Field(pattern=r'^\d{6}$')
+    code: str = Field(pattern=CODE_PATTERN)
     metric: str
     value: StrictFloat
-    unit: Literal['CNY', 'shares', 'ratio', 'CNY/share', 'multiple']
-    currency: Literal['CNY'] = 'CNY'
+    unit: str = Field(pattern=r'^(?:[A-Z]{3}(?:/share)?|shares|ratio|multiple)$')
     report_period: str
     period_start: str | None = None
     period_end: str
-    period_basis: Literal['instant', 'ytd', 'quarter', 'annual']
+    period_basis: Literal['instant', 'ytd', 'quarter', 'half_year', 'annual']
     scope: Literal['consolidated', 'parent', 'unknown']
     attribution: Literal['all_claims', 'parent_common', 'minority', 'unknown']
     source: str
@@ -37,6 +54,8 @@ class ValueFact(ValueModel):
 
     @model_validator(mode='after')
     def capital_contract(self):
+        if self.unit not in ('shares','ratio','multiple') and self.unit.split('/')[0]!=self.currency:
+            raise ValueError('货币单位与财报币种不一致')
         validate_current_capital(self)
         if self.metric == 'current_shares':
             from src.schemas.a_share_integrated import stamp
@@ -65,7 +84,7 @@ class MonitorRule(ValueModel):
     metric: Literal['revenue','net_profit','operating_cashflow','capex','roe','operating_margin','cash_conversion','roic_proxy','cash_surplus_proxy']
     operator: Literal['lt','lte','gt','gte']
     threshold: StrictFloat
-    unit: Literal['CNY','ratio']
+    unit: str = Field(pattern=r'^(?:[A-Z]{3}|ratio)$')
     basis: Literal['ttm'] = 'ttm'
     target_period: str | None = None
     review_on: str | None = None
@@ -85,7 +104,7 @@ class ForecastObservation(ValueModel):
     metric: Literal['revenue','net_profit','operating_cashflow','capex','roe','operating_margin','cash_conversion','roic_proxy','cash_surplus_proxy']
     period: str
     value: StrictFloat
-    unit: Literal['CNY','ratio']
+    unit: str = Field(pattern=r'^(?:[A-Z]{3}|ratio)$')
     basis: Literal['ttm'] = 'ttm'
     sources: list[str] = Field(min_length=1,max_length=30)
     rationale: str = Field(min_length=3,max_length=1000)
@@ -99,10 +118,10 @@ class ForecastObservation(ValueModel):
         return value
 
 
-class ValueSnapshot(ValueModel):
+class ValueSnapshot(InstrumentValueModel):
     version: str = VERSION
     snapshot_id: str
-    code: str = Field(pattern=r'^\d{6}$')
+    code: str = Field(pattern=CODE_PATTERN)
     name: str
     cutoff: str
     facts: list[ValueFact] = Field(default_factory=list)
@@ -117,9 +136,9 @@ class ValueSnapshot(ValueModel):
     missing: list[str] = Field(default_factory=list)
 
 
-class ValueAssumptions(ValueModel):
+class ValueAssumptions(InstrumentValueModel):
     snapshot_id: str
-    code: str = Field(pattern=r'^\d{6}$')
+    code: str = Field(pattern=CODE_PATTERN)
     revision: int = Field(default=0, ge=0)
     confirmed: bool = False
     primary_method: Literal['fcff', 'fcfe', 'rim', 'ddm', 'nav'] = 'fcff'
@@ -152,7 +171,8 @@ class ValueAssumptions(ValueModel):
         return value
 
 
-class ValueReport(ValueModel):
+class ValueReport(InstrumentValueModel):
+    listing: dict = Field(default_factory=dict)
     code: str
     snapshot_id: str
     assumptions_revision: int
@@ -199,9 +219,10 @@ class EvaluateValueRequest(ValueModel):
 class SupplementFact(ValueModel):
     metric: str = Field(max_length=80)
     value: StrictFloat
-    unit: Literal['CNY', 'shares', 'ratio', 'CNY/share', 'multiple']
+    currency: str = Field(default='CNY',pattern=r'^[A-Z]{3}$')
+    unit: str = Field(pattern=r'^(?:[A-Z]{3}(?:/share)?|shares|ratio|multiple)$')
     report_period: str
-    period_basis: Literal['instant', 'ytd', 'quarter', 'annual']
+    period_basis: Literal['instant', 'ytd', 'quarter', 'half_year', 'annual']
     scope: Literal['consolidated', 'parent', 'unknown']
     attribution: Literal['all_claims', 'parent_common', 'minority', 'unknown']
     url: str = Field(max_length=2000)

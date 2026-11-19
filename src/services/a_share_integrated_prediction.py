@@ -35,6 +35,8 @@ def strategy_candidates(bundle, min_reward_risk):
     reasons = list(base.get('plan', {}).get('reasons', []))
     blocked = (context.get('major_risk') is True or not context.get('identity_verified') or context.get('st') is not False or
                context.get('board') != 'main' or any('重大风险' in r for r in reasons))
+    if context.get('market') in ('us','hk'):
+        blocked=bool(context.get('major_risk') or not context.get('identity_verified') or context.get('asset_type')!='stock')
     trends = {r['period']:r.get('state') for r in base.get('trends', [])}
     environment = base.get('environment', {})
     long_up = all(trends.get(p) == 'up' for p in (60,120,250)) and base.get('weekly', {}).get('state') == 'up'
@@ -138,14 +140,18 @@ def validate_integrated_prediction(value, bundle, sent_ids, min_reward_risk=2., 
                 # Conservative one-lot illustration, not an executed or historical cost model.
                 from src.services.a_share_rules import DEFAULT_RISK
                 unit_cost=2*max(DEFAULT_RISK['minimum_fee']/100,hi*DEFAULT_RISK['commission'])+2*hi*DEFAULT_RISK['transfer_fee']+hi*.002
-                net_ratio=(data['targets'][0]-hi-unit_cost)/(hi-stop+unit_cost)
-                if data['targets'][0]-hi<=unit_cost or net_ratio<min_reward_risk:
+                offshore=bundle.get('context',{}).get('market') in ('us','hk')
+                if offshore:
+                    unit_cost=None
+                    reasons.append('本市场税费、滑点和交易单位尚未配置；仅展示毛收益/风险观察，不套用A股成本')
+                else:net_ratio=(data['targets'][0]-hi-unit_cost)/(hi-stop+unit_cost)
+                if unit_cost is not None and (data['targets'][0]-hi<=unit_cost or net_ratio<min_reward_risk):
                     reasons.append('成本空间不足：按100股示例、最低佣金及税费/滑点预算估计；实际成交成本未验证')
                 if ratio < min_reward_risk:
                     reasons.append('潜在收益/风险不足，未抬高目标价')
                 if secondary and (min(data['targets'])-secondary['high'])/(secondary['high']-stop) < min_reward_risk:
                     reasons.append('二次买入条件的潜在收益/风险不足')
-                if secondary and (min(data['targets'])-secondary['high']-unit_cost)/(secondary['high']-stop+unit_cost) < min_reward_risk:
+                if secondary and unit_cost is not None and (min(data['targets'])-secondary['high']-unit_cost)/(secondary['high']-stop+unit_cost) < min_reward_risk:
                     reasons.append('二次买入条件的成本后收益/风险空间不足')
             chosen=candidates.get(data['strategy_kind'])
             if not chosen or not chosen['eligible']:

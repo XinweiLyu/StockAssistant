@@ -240,6 +240,10 @@ class IntegratedResearchService:
             else:
                 missing.append('未来或未知可用时间的资料已排除')
         industry = self._industry(code)
+        flow_service = getattr(market, 'fund_flow', None)
+        flow_fact = flow_service.research_fact(code, industry, cutoff, context['anchor_date']) if flow_service else None
+        if flow_fact:
+            available.append(flow_fact)
         baseline = svc.quant_outlook(code)
         days = market.calendar()
         selected_events = []
@@ -296,6 +300,7 @@ class IntegratedResearchService:
             dict(category='liquidity',status='ready' if context['features'].get('avg_amount') else 'missing',count=20,
                  source=context['source']),dict(category='chips',status='missing',count=0)]
         eligibility = self._eligibility(stock)
+        price_coverage.append(dict(category='sector_flow',status='ready' if flow_fact else 'missing',count=1 if flow_fact else 0,source='eastmoney/sector-flow'))
         research_context = dict(price=context, industry=industry,financial_coverage=financial_coverage(available),
             **eligibility,eligibility_binding=eligibility,
             source_signature=list(source_signature(svc.settings)))

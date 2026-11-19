@@ -45,6 +45,8 @@ class MarketService:
         self.repo=repo
         self.jobs=jobs
         self.clock=clock or (lambda:datetime.now(timezone.utc))
+        from src.services.a_share_sector_flow_service import SectorFlowService
+        self.fund_flow=SectorFlowService(self)
 
     @property
     def profile(self):
@@ -361,6 +363,8 @@ class MarketService:
         if profile=='demo':
             self.ensure_demo()
             return
+        if kind.startswith('sector_flow_'):
+            return self.fund_flow.handle_task(task)
         provider=self.provider_for(settings)
         partial=False
         try:

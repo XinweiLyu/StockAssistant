@@ -196,11 +196,27 @@ def evaluate_value(assumptions, snapshot):
     s = ValueSnapshot.model_validate(snapshot).model_dump()
     if a['snapshot_id'] != s['snapshot_id'] or a['code'] != s['code']:
         raise ValueError('估值假设与资料股票/版本不一致')
+    if (a['market'],a['currency'])!=(s['market'],s['currency']):raise ValueError('估值市场或现金流币种与快照不一致')
+    offshore=s['market']!='cn'
+    listing=s['binding'].get('listing',{})
+    if offshore:
+        from src.services.market_workspace_financials import validate_listing_capital
+        listing=validate_listing_capital(listing,s['financial_view'].get('current_capital'),
+            s['binding'].get('quote',{}).get('trade_date') or s['cutoff'][:10],s['cutoff'])
     eligibility = s['binding'].get('eligibility', {})
     allowed = s['economic_model'].get('allowed_methods')
     method_context=dict(valuation_date=s['cutoff'][:10])
     if allowed is not None:method_context['allowed_methods']=allowed
     results = [evaluate_method(c.get('method'), c, s['financial_view'], method_context) for c in a['cases']]
+    if offshore:
+        for case,result in zip(a['cases'],results):
+            result['currency']=s['currency']
+            if case.get('currency')!=s['currency'] or case.get('discount_currency')!=s['currency']:
+                result.update(state='blocked',missing=result.get('missing',[])+['现金流和折现率须明确使用同一估值币种'])
+                result.pop('value_per_share',None);result.pop('value_total',None)
+            if result['state']=='ready' and listing.get('ready'):
+                result['quote_value_per_share']=result['value_per_share']*number(listing.get('rate'),'汇率',1e-12)*number(listing.get('underlying_per_listed'),'上市股权比例',1e-12)
+                result['quote_currency']=listing.get('quote_currency')
     primary = {r['scenario']: r for r in results if r['method'] == a['primary_method'] and r['state'] == 'ready'}
     missing = [m for r in results for m in r.get('missing', [])]
     complete = all(k in primary for k in ('conservative', 'base', 'upside'))
@@ -227,6 +243,9 @@ def evaluate_value(assumptions, snapshot):
     capital = s['financial_view'].get('current_capital') or {}
     quote = s['binding'].get('quote', {})
     fresh_capital = capital.get('available_at', '')[:10] == s['cutoff'][:10] and capital.get('period', '') >= (quote.get('trade_date') or s['cutoff'][:10])
+    if offshore:
+        coverage=(listing.get('capital') or {}).get('verified_through','')
+        fresh_capital=bool(listing.get('ready') and capital.get('available_at','')<=s['cutoff'] and coverage>=(quote.get('trade_date') or s['cutoff'][:10]))
     shares_fact = capital.get('value') if fresh_capital else None
     capital_matches = shares_fact and all(c.get('shares') == shares_fact for c in a['cases'])
     if not reviewed:
@@ -243,13 +262,19 @@ def evaluate_value(assumptions, snapshot):
     if reference and complete and state!='disputed':
         state='reference'
         missing.append('规则参数敏感性试算，非AI完整估值，不发布条件安全价或收益判断')
-    value = primary.get('conservative', {}).get('value_per_share')
+    value = primary.get('conservative', {}).get('quote_value_per_share' if offshore else 'value_per_share')
+    listing_valid=not offshore or (listing.get('ready') and listing.get('instrument_id')==s['code'] and
+        quote.get('instrument_id')==s['code'] and quote.get('currency')==listing.get('quote_currency') and
+        listing.get('valuation_currency')==s['currency'] and quote.get('basis')=='raw')
     comparison = compare_price(value, s['binding'].get('quote', {}), a['margin_required'], dict(eligible=state == 'conditional'))
+    if not listing_valid:
+        comparison.update(margin=None,upside=None,conditional_price=None,reference_value=None,reason='；'.join(listing.get('missing',[])) or '证券、货币、上市单位或原始价格绑定不匹配')
+        if state=='conditional':state='review_required'
     if reference:
         comparison.update(margin=None,upside=None,conditional_price=None,reason='参考试算不作当前价格吸引力或安全买入价判断')
     sensitivities = []
     base_case = next((c for c in a['cases'] if c.get('method') == a['primary_method'] and c.get('scenario') == 'conservative'), None)
-    if base_case:
+    if base_case and (not offshore or base_case.get("currency")==s["currency"] and base_case.get("discount_currency")==s["currency"]):
         for label, change in [('折现率上升2个百分点', 'discount'), ('无额外收益摊薄10%', 'dilution'), ('经营不利冲击', 'operating')]:
             case = deepcopy(base_case)
             if change == 'discount':
@@ -272,7 +297,7 @@ def evaluate_value(assumptions, snapshot):
             stress = evaluate_method(case.get('method'), case, s['financial_view'], method_context)
             if change=='operating' and case.get('method')=='ddm':label='股利分配减少20%（非经营压力）'
             sensitivities.append(dict(label=label, value=stress.get('value_per_share'), missing=stress.get('missing', []), note='显式机械压力，不是概率'))
-    return ValueReport(code=a['code'], snapshot_id=s['snapshot_id'], assumptions_revision=a['revision'],
+    return ValueReport(market=s['market'],currency=s['currency'],listing=listing,code=a['code'], snapshot_id=s['snapshot_id'], assumptions_revision=a['revision'],
         parameter_origin='reference_sensitivity_v1' if reference else None,
         generated_at=s['cutoff'], valuation_state=state, primary_method=a['primary_method'], valuation_cases=results,
         comparison=comparison, quality=s['financial_view'].get('quality', {}), peers=s['peers'], theses=a['theses'],

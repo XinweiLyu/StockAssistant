@@ -10,10 +10,19 @@ REVIEW_SESSIONS = {'earnings': 120, 'order': 250, 'policy': 250,
                    'buyback': 120, 'ownership': 60, 'regulatory': 250, 'disclosure': 20}
 
 
-def event_anchor_index(published_at, calendar):
+def event_anchor_index(published_at, calendar, market='cn'):
     published = stamp(published_at)
     if not published:
         return None
+    if market!='cn':
+        try:
+            import exchange_calendars as xcals
+            from src.core.trading_calendar import MARKET_EXCHANGE,completed_daily_bar_close
+            cal=xcals.get_calendar(MARKET_EXCHANGE[market])
+            when=datetime.fromisoformat(published)
+            before=[i for i,day in enumerate(calendar) if completed_daily_bar_close(market,cal,day).to_pydatetime()<=when]
+            return before[-1] if before else None
+        except (ValueError,KeyError,TypeError):return None
     day = published[:10]
     after_close = datetime.fromisoformat(published).hour >= 15
     before = [i for i, d in enumerate(calendar) if d <= day] if after_close else [i for i, d in enumerate(calendar) if d < day]
@@ -23,7 +32,8 @@ def event_anchor_index(published_at, calendar):
 def annotate_lifecycle(event, calendar, anchor_date):
     days = sorted(set(d for d in calendar if d <= anchor_date))
     published = stamp(event.get('published_at'))
-    index = event_anchor_index(published, days)
+    market=event.get('market') or (str(event.get('code','')).split(':')[0] if ':' in str(event.get('code','')) else 'cn')
+    index = event_anchor_index(published, days,market)
     age = len(days)-1-index if index is not None else None
     window = REVIEW_SESSIONS.get(event.get('kind'), 20)
     verified = bool(event.get('public_verified'))

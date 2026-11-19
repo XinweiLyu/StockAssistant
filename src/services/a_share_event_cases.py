@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import date
 from math import isfinite
 import re
 import numpy as np
@@ -40,6 +41,23 @@ def extract_event_facts(document, numeric_facts, completion=None):
                   extraction_status='insufficient', public_verified=bool(document.get('text_status') == 'ready'))
     if not text:
         return result
+    if document.get('market') in ('us','hk'):
+        # Offshore reported YoY is derived only from same-scope, originally
+        # available official facts, never a search summary or consensus guess.
+        if document.get('kind')!='earnings' or document.get('text_status')!='ready' or not document.get('report_period'):return result
+        when=stamp(document.get('published_at'));period=document['report_period']
+        rows=[f for f in numeric_facts if f.get('code')==document.get('code') and f.get('source')=='sec/companyfacts'
+            and stamp(f.get('available_at')) and stamp(f['available_at'])<=when and finite(f.get('values',{}).get('net_profit'))]
+        current=[f for f in rows if f.get('report_period')==period]
+        if len(current)!=1:return result
+        cur=current[0];basis=cur['values'].get('period_basis');unit=cur.get('units',{}).get('net_profit')
+        prior=[f for f in rows if f['values'].get('period_basis')==basis and f.get('units',{}).get('net_profit')==unit
+            and f.get('report_period') and 350<=(date.fromisoformat(period)-date.fromisoformat(f['report_period'])).days<=380]
+        if len(prior)!=1 or not basis or not unit or prior[0]['values']['net_profit']<=0:return result
+        previous=prior[0];change=(cur['values']['net_profit']-previous['values']['net_profit'])/previous['values']['net_profit']
+        return result|dict(direction='positive' if change>0 else 'negative' if change<0 else 'neutral',intensity=change,
+            intensity_unit='profit_yoy_ratio',extraction_status='structured_financial_change',metric_sources=[cur['fact_id'],previous['fact_id']],
+            evidence_quote=f"Reported net income {period}: {cur['values']['net_profit']} {unit}; prior comparable: {previous['values']['net_profit']} {unit}",expectation_surprise=None)
     if re.search(r'撤销|撤回|作废', document.get('title','')):
         return result | dict(extraction_status='withdrawn')
     # Background earnings in a contract or penalty do not quantify that event.
@@ -104,7 +122,8 @@ def event_context(event, histories, calendar, cutoff, elapsed_sessions=0):
     output = dict(event, outcomes={}, pre5=None, pre20=None, market_state='unknown')
     if not published or published > stamp(cutoff):
         return output
-    anchor = event_anchor_index(published, calendar)
+    market=event.get('market') or (str(event.get('code','')).split(':')[0] if ':' in str(event.get('code','')) else 'cn')
+    anchor = event_anchor_index(published, calendar,market)
     if anchor is None:
         return output
     maps = {k: {r['date']: r for r in v if r['date'] <= str(cutoff)[:10]} for k, v in histories.items()}
@@ -120,6 +139,7 @@ def event_context(event, histories, calendar, cutoff, elapsed_sessions=0):
     original_price, previous = close('stock',anchor), close('stock',anchor-20)
     output['event_pre20'] = original_price/previous-1 if original_price and previous else None
     anchor += elapsed_sessions
+    if anchor>=len(calendar):return output
     output['elapsed_sessions'] = elapsed_sessions
     output['event_anchor_date'] = calendar[original_anchor]
     base = close('stock', anchor)
@@ -190,6 +210,8 @@ def match_event_cases(target, cases, cutoff, horizons=HORIZONS):
             families.add(family)
         if case.get('id') == target.get('id') or (target.get('family_id') and family == (target.get('code'), target['family_id'])):
             reason = 'self'
+        elif (target.get('market') or str(target.get('code','')).partition(':')[0]) != (case.get('market') or str(case.get('code','')).partition(':')[0]) and (':' in str(target.get('code','')) or target.get('market')):
+            reason = 'market'
         elif not when or when > cutoff_stamp:
             reason = 'future'
         elif not case.get('public_verified'):

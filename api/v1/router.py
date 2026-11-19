@@ -124,3 +124,5 @@ router.include_router(
 )
 
 router.include_router(a_share.router, prefix="/a-share", tags=["A-share Assistant"])
+from api.v1.endpoints.market_workspace import router as market_workspace_router
+router.include_router(market_workspace_router,tags=['Market Workspace'])

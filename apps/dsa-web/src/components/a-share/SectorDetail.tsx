@@ -1,3 +1,6 @@
+import SectorFundFlowPanel from './SectorFundFlowPanel';
+import {flowMoney} from './sectorFundFlowData';
+import type {SectorFundFlow} from '../../types/aShareSectorFlow';
 import { useEffect,useRef,useState } from 'react';
 import { aShareMarketApi } from '../../api/aShareMarket';
 import type { HistoryPage,Sector,SectorMembersPage } from '../../types/aShareMarket';
@@ -9,6 +12,8 @@ export default function SectorDetail({sector,onSelectStock,onClose,stockCode}:{s
   const [page,setPage]=useState(1),[q,setQ]=useState(''),[sort,setSort]=useState('change'),[retry,setRetry]=useState(0);
   const [saved,setSaved]=useState<{key:string;members?:SectorMembersPage;error?:string}>({key:''});
   const refreshMembers=useRef(false);
+  const [flow,setFlow]=useState<SectorFundFlow|undefined>();
+  const moneyFlows=new Map((flow?.sector.sector_id===sector.sector_id?flow.member_flows:[]).map(r=>[r.code,r]));
   const [comparisonOpen,setComparisonOpen]=useState(false);
   const [comparison,setComparison]=useState<{key:string;history?:HistoryPage;benchmark?:HistoryPage;stock?:HistoryPage;error?:string}>({key:''});
   const key=JSON.stringify([sector.sector_id,page,q,sort]);
@@ -76,13 +81,14 @@ export default function SectorDetail({sector,onSelectStock,onClose,stockCode}:{s
     <div className="as-section-heading"><div><h2>{sector.name} · {sector.kind==='industry'?'行业':'概念'}</h2><p>{sector.classification} · {sector.source}<br/>板块获取 {sector.fetched_at}</p></div><button className="am-button" onClick={onClose}>关闭板块详情</button></div>
     <div className="am-sector-summary"><strong className={sector.change==null?'':sector.change>=0?'am-up':'am-down'}>{sector.change==null?'涨跌资料不足':`${sector.change>0?'+':''}${(sector.change*100).toFixed(2)}%`}</strong><span>源公布快照 · 点击下方股票查看 K 线</span></div>
     <p className="as-footnote">已获取成员 {!pending?(value?.members?.membership.codes.length??total):'待补齐'} 家 · 本地报价覆盖 {breadth?breadth.total-breadth.unknown:'未知'} 家 · 上涨 {breadth?.up??'未知'} / 下跌 {breadth?.down??'未知'} / 平盘 {breadth?.flat??'未知'} / 报价未知 {breadth?.unknown??'未知'}<br/>成员来源 {value?.members?.membership.source||sector.source} · 成员版本 {membershipVersion||'待补齐'}；报价覆盖计数不等于源公布指数涨跌。</p>
+    <SectorFundFlowPanel sector={sector} onData={setFlow}/>
     <div className="am-toolbar am-member-toolbar"><input aria-label="搜索板块成分股" placeholder="代码或股票名称" value={q} onChange={event=>{setQ(event.target.value);setPage(1);}}/><select aria-label="成分股排序" value={sort} onChange={event=>{setSort(event.target.value);setPage(1);}}><option value="change">涨跌幅</option><option value="amount">成交额</option><option value="code">代码</option><option value="name">名称</option></select></div>
     {pending&&!value?.error&&<p className="as-footnote" role="status">正在获取板块成分股，完成后自动展示…</p>}
     {value?.error&&<p role="alert">{value.error}；{value?.members?.membership.version?'保留上一版成员缓存。':'成员尚未取得，此时空表不代表板块没有股票。'}<button className="am-button" onClick={()=>{refreshMembers.current=true;setRetry(v=>v+1);}}>重试成分股</button></p>}
-    <div className="as-table-wrap am-member-table"><table className="as-table" aria-label="板块成分股"><thead><tr><th>股票 / 代码</th><th>最新价</th><th>涨跌幅</th></tr></thead><tbody>{value?.members?.items?.map(stock=><tr key={stock.code}><td><button className="as-stock" aria-label={`查看${stock.name} ${stock.code}`} onClick={()=>onSelectStock(stock.code)}>{stock.name}<span>{stock.code}</span></button></td><td>{money(stock.quote?.price)}</td><td className={stock.quote?.change==null?'':stock.quote.change>=0?'am-up':'am-down'}>{stock.quote?.change==null?'—':`${stock.quote.change>0?'+':''}${(stock.quote.change*100).toFixed(2)}%`}</td></tr>)}</tbody></table></div>
+    <div className="as-table-wrap am-member-table"><table className="as-table" aria-label="板块成分股"><thead><tr><th>股票 / 代码</th><th>最新价</th><th>涨跌幅</th><th>主力净额</th><th>主力净占比</th></tr></thead><tbody>{value?.members?.items?.map(stock=><tr key={stock.code}><td><button className="as-stock" aria-label={`查看${stock.name} ${stock.code}`} onClick={()=>onSelectStock(stock.code)}>{stock.name}<span>{stock.code}</span></button></td><td>{money(stock.quote?.price)}</td><td className={stock.quote?.change==null?'':stock.quote.change>=0?'am-up':'am-down'}>{stock.quote?.change==null?'—':`${stock.quote.change>0?'+':''}${(stock.quote.change*100).toFixed(2)}%`}</td><td>{flowMoney(moneyFlows.get(stock.code)?.values.main)}</td><td>{moneyFlows.get(stock.code)?.ratios.main==null?'—':(moneyFlows.get(stock.code)!.ratios.main!*100).toFixed(2)+'%'}</td></tr>)}</tbody></table></div>
     {!pending&&!total&&!value?.error&&<p className="as-footnote">当前条件没有已获取的成分股，可更换搜索条件；未填造股票或行情。</p>}
     <div className="am-pagination"><button disabled={page<=1} onClick={()=>setPage(p=>p-1)}>上一页成分股</button><span>{page} / {pages} · {total} 只</span><button disabled={pending||page*20>=total} onClick={()=>setPage(p=>p+1)}>下一页成分股</button></div>
-    <p className="as-footnote">成员报价可能来自不同时间的缓存；进入个股后可手动刷新最新行情。</p>
+    <p className="as-footnote">成员资金获取 {flow?.sector.sector_id===sector.sector_id?flow.member_observed_at||'未知':'未知'}，来源交易日期未知；不与报价视为同一时刻。成员报价可能来自不同时间的缓存；进入个股后可手动刷新最新行情。</p>
     <details onToggle={event=>setComparisonOpen(event.currentTarget.open)}><summary>板块历史与沪深300 / 所选股票对比</summary>{comparisonOpen&&<>
       {plots?.error&&<p role="alert">{plots.error}</p>}<p className="as-footnote">源公布指数 · 实际截止 {plots?.history?.actual_end||'待取得'} · {plots?.history?.state||'查询中'}</p>
       <PriceChart items={plots?.history?.items||[]} chartType="line" indicators={{MA20:true}} levels={[]}/><SectorComparisonChart sector={plots?.history?.items||[]} benchmark={plots?.benchmark?.items||[]} stock={plots?.stock?.items}/>

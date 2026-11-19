@@ -25,6 +25,7 @@ ALLOWED |= {'stock_info_a_code_name','stock_info_bj_name_code','stock_board_indu
             'stock_board_concept_name_em','stock_board_concept_cons_em','stock_board_concept_hist_em',
             'stock_board_industry_name_ths','stock_board_industry_index_ths',
             'stock_board_concept_name_ths','stock_board_concept_index_ths'}
+ALLOWED |= {'sector_fund_flow_rank_em','sector_fund_flow_history_em','sector_fund_flow_members_em'}
 TS_ALLOWED = {'daily','adj_factor','stock_basic','trade_cal','daily_basic','rt_k','news','anns_d','stk_limit','suspend_d'}
 ALLOWED |= {'stock_financial_analysis_indicator_em', 'stock_profit_sheet_by_report_em',
             'stock_balance_sheet_by_report_em', 'stock_cash_flow_sheet_by_report_em',
@@ -178,6 +179,12 @@ if __name__=='__main__' and '--request' in sys.argv:
             print(json.dumps([dict(zip(data['fields'],r)) for r in data['items']],ensure_ascii=False))
             sys.exit(0)
         else:
+            if request['name'] in {'sector_fund_flow_rank_em','sector_fund_flow_history_em','sector_fund_flow_members_em'}:
+                sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+                from data_provider.a_share_sector_flow import fetch_rank,fetch_history,fetch_members
+                fn={'sector_fund_flow_rank_em':fetch_rank,'sector_fund_flow_history_em':fetch_history,'sector_fund_flow_members_em':fetch_members}[request['name']]
+                print(json.dumps(fn(**request['params']),ensure_ascii=False))
+                sys.exit(0)
             if request['name']=='stock_board_members_f10_em':
                 from a_share_sector_members import fetch_members
                 print(json.dumps(fetch_members(**request['params']),ensure_ascii=False))

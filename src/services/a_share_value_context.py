@@ -10,7 +10,7 @@ def normalized_history(annual, current_revenue):
         rows = []
         for year in annual:
             rev, amount = year['metrics'].get('revenue'), year['metrics'].get(metric)
-            if (not rev or not amount or rev['value'] <= 0 or rev['unit'] != 'CNY' or amount['unit'] != 'CNY'
+            if (not rev or not amount or rev['value'] <= 0 or len(rev['unit'])!=3 or not rev['unit'].isupper() or amount['unit'] != rev['unit']
                 or any(rev.get(k) != amount.get(k) for k in ('vendor','scope'))):
                 continue
             rows.append(dict(period=year['period'], margin=amount['value']/rev['value'],

@@ -113,11 +113,11 @@ def build_value_payload(s):
     known={e['id']:e for e in s['evidence']}
     facts=sorted(s.get('facts',[]),key=lambda f:f['report_period'],reverse=True)
     period=max((f['report_period'] for f in facts if f['metric']!='current_shares'),default='')
-    annual_period=max((f['report_period'] for f in facts if f['report_period'].endswith('12-31')),default='')
+    annual_period=max((f['report_period'] for f in facts if f['period_basis']=='annual'),default='')
     previous=str(int(period[:4])-1)+period[4:] if period else ''
-    payload=dict(code=s['code'],name=s['name'],snapshot_id=s['snapshot_id'],cutoff=s['cutoff'],
+    payload=dict(code=s['code'],market=s.get('market','cn'),currency=s.get('currency','CNY'),listing=s.get('binding',{}).get('listing'),name=s['name'],snapshot_id=s['snapshot_id'],cutoff=s['cutoff'],
                  economic_model=s['economic_model'],evidence=[],
-                 financial_defaults=dict(unit='CNY',scope='consolidated',attribution='all_claims'),
+                 financial_defaults=dict(unit=s.get('currency','CNY'),scope='consolidated',attribution='all_claims'),
                  source_aliases={f'S{i}':source for i,source in enumerate(sorted({f['source'] for f in facts}))},
                  available_coverage=dict(financial_fact_count=len(facts),
                     annual_periods=sorted({f['report_period'] for f in facts if f.get('period_basis')=='annual'}),
@@ -242,7 +242,9 @@ class ValueResearchEngine:
         payload, sent, omitted = build_value_payload(s)
         progress(dict(phase='ai', percent=55, message='一次模型调用：经营质量、估值、反方与资本分配复核', elapsed_seconds=0, eta_seconds=None))
         self.repo.record_manual_call(s['cutoff'][:10])
-        value = self.completion([dict(role='system', content=PROMPT), dict(role='user', content=json.dumps(payload, ensure_ascii=False))], settings.model)
+        prompt=PROMPT.replace('CNY',s.get('currency','CNY')).replace('人民币元',s.get('currency','CNY')+'原币单位')
+        if s.get('market','cn')!='cn':prompt+='\n当前为港美股研究。所有case必须填写currency和discount_currency，均为快照currency；proposed_assumptions必须填写market/currency。不能推断ADR比例或补造缺失债务，上市绑定不足时保留本币估值草案。'
+        value = self.completion([dict(role='system', content=prompt), dict(role='user', content=json.dumps(payload, ensure_ascii=False))], settings.model)
         if not isinstance(value, dict):
             raise ValueError('模型输出须为JSON对象')
         rejected = 0

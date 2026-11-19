@@ -10,7 +10,7 @@ from src.services.a_share_integrated_prediction import UNSAFE
 from src.services.a_share_event_cases import effective_event_families
 
 ROLES = [
-    ('market_analyst','市场与行业','综合市场环境、行业相对强弱及可核对业务敞口，未知敞口不推定受益。'),
+    ('market_analyst','市场与行业','综合市场环境、行业相对强弱及可核对业务敞口，未知敞口不推定受益。若有行业资金事实，核对日期与覆盖，主力仅为单量分类且已含超大单和大单，不重复求和、不当作机构持仓或因果价格预测；缺失不得补值。'),
     ('fundamentals_analyst','业绩与估值','比较盈利质量、扣非、现金流、杠杆与估值缺口；同比增长不等于超预期。'),
     ('event_analyst','事件与历史案例','核对事件新颖性、已反映涨幅、可比条件与混杂；样本不足不能填影响百分比。'),
     ('technical_analyst','价格与流动性','综合长短周期、完整周线、价量及流动性；区分反弹与长期反转。'),
@@ -21,7 +21,7 @@ ROLES = [
 
 def _evidence(bundle):
     price=dict(code=bundle['code'],anchor_date=bundle['anchor_date'],reference_price=bundle['reference_price'],
-               currency='CNY',price_basis='raw',context=bundle.get('context',{}).get('price',{}))
+               currency=bundle.get('context',{}).get('currency') or bundle.get('context',{}).get('price',{}).get('currency','CNY'),price_basis='raw',context=bundle.get('context',{}).get('price',{}))
     market={k:bundle.get('baseline',{}).get(k) for k in ('trends','weekly','environment','plan')}
     market['current_industry']=bundle.get('context',{}).get('industry')
     market['eligibility']=bundle.get('context',{}).get('eligibility_binding')
@@ -169,6 +169,10 @@ def run_integrated(engine,bundle,settings,day,manual=True,progress=None,force=Fa
         prompt+=' 新闻新颖性根据published_at及日期精度判断，available_at仅为系统取得时间，不可将旧消息当新催化。'
         if role=='research_manager':
             prompt+=' 同时返回forecasts和plans。forecasts最多9项，字段仅：horizon_sessions(5/20/60),scenario(bear/base/bull),low,high,conditions(字符串数组),sources(须含P1及相关事实),basis_ids(已发送的B/C数值依据ID),derivation(解释资料如何影响情景)。价格用人民币不复权口径，同期限情景中心按bear/base/bull递增；low/high必须在所引数值参考low/high并集范围内，不能用新闻固定加百分比。没有数值依据时该期限不填。plans最多3项，每期限最多1项，仅含：horizon_sessions,strategy_kind(trend_pullback/range_reversion/event_followthrough/observe),status(conditional/observe),entry_low,entry_high,stop_reference,second_entry(null或{low,high,conditions,invalidation}),targets(递增价格数组),conditions,invalidation,valid_until(截止日之后的ISO日期),sources,basis_ids,derivation。止损<买入下界<=上界<第一目标，第二次入场也在止损与第一目标之间；最低收益风险比2，不满足可观察，不能抬高目标凑数。来源不足留null和空数组，明确期限及失效。输出为未校准研究情景。'
+        if bundle.get('context',{}).get('market') in ('us','hk'):
+            currency=bundle['context'].get('currency') or '未知报价币种'
+            prompt=prompt.replace('人民币',currency).replace('0.01元','0.01报价币种单位（仅研究刻度，非交易所买卖差价）')
+            prompt+=' 当前是港美股研究；不得套用A股ST、涨跌停、T+1、北向资金和100股最低佣金。行业/机构或历史事件缺口须明确。'
         messages=[dict(role='system',content=prompt),dict(role='user',content=json.dumps(context,ensure_ascii=False))]
         role_started=time.monotonic()
         try:
@@ -195,6 +199,8 @@ def run_integrated(engine,bundle,settings,day,manual=True,progress=None,force=Fa
         forecasts=prices['forecasts'],plans=prices['plans'],rejected=prices['rejected'],numeric_references=refs,
         rejections=prices.get('rejections',[]),
         limitations=prices['limitations']+['同模型多角色不构成独立确认；缺失或裁剪资料不得引用','不支持可靠数值抽取的事件保持待量化，未暗中逐事件付费调用'])
+    if bundle.get('context',{}).get('market') in ('us','hk'):
+        result.update(market=bundle['context']['market'],currency=bundle['context'].get('currency'))
     engine.repo.append(settings.mode,'integrated_cache',identity,result)
     emit(phase='saving',message='研究完成，正在保存报告与价位')
     return result

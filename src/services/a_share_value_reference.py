@@ -16,7 +16,7 @@ def build_value_reference(s):
         sources=[]
         def fact(group,metric,positive=False):
             f=group.get(metric) or {}
-            if f.get('unit')!='CNY' or f.get('period')!=period.isoformat() or not f.get('fact_ids') or not set(f['fact_ids'])<=ids:
+            if f.get('unit')!=s.get('currency','CNY') or f.get('period')!=period.isoformat() or not f.get('fact_ids') or not set(f['fact_ids'])<=ids:
                 raise ValueError(metric+'缺少当前可核对的金额及来源，未填0')
             sources.extend(f['fact_ids'])
             return number(f.get('value'),metric,1e-12 if positive else 0)
@@ -76,12 +76,12 @@ def build_value_reference(s):
                 minimum_cash=minimum,terminal_capital_stable=True,terminal_earnings=earnings,
                 terminal_operating_cashflow=operating,terminal_capex=investment,terminal_financing_cash_costs=finance,
                 terminal_minority_distributions=reserve,years=rows)
-            cases.append(dict(method='ddm',scenario=scenario,discount=discount,terminal_growth=g,shares=shares,
+            cases.append(dict(currency=s.get('currency','CNY'),discount_currency=s.get('currency','CNY'),method='ddm',scenario=scenario,discount=discount,terminal_growth=g,shares=shares,
                 fixed_capital=False,capital_feasible=True,dividends=dividends,terminal_dividend=dividend,
                 capital_bridge=bridge,evidence_ids=sources,parameter_origin='reference_sensitivity_v1',
                 start_date=s['cutoff'][:10],rationale=f'软件参数敏感性：折现率{discount:.1%}、经营增长{growth:.1%}、现金流系数{haircut:.0%}、目标分红率{payout:.0%}；未核实续贷和未来资本计划'))
             parameters.append(dict(scenario=scenario,discount=discount,growth=growth,terminal_growth=g,cash_factor=haircut,payout=payout))
-        assumptions=ValueAssumptions(code=s['code'],snapshot_id=s['snapshot_id'],confirmed=False,primary_method='ddm',cases=cases).model_dump()
+        assumptions=ValueAssumptions(market=s.get('market','cn'),currency=s.get('currency','CNY'),code=s['code'],snapshot_id=s['snapshot_id'],confirmed=False,primary_method='ddm',cases=cases).model_dump()
         report=evaluate_value(assumptions,s)
         if any(c['state']!='ready' for c in report['valuation_cases']):
             raise ValueError('参考参数未通过股本或现金一致性校验')

@@ -16,3 +16,9 @@ it('hides draft/stale or mismatched capital and maps matched raw values to qfq',
  result.assumptions!.cases[0].shares=20;
  expect(valueChartLevels(result,raw,history,'qfq',true).levels).toEqual([]);
 });
+
+it('withholds offshore value lines without a verified listing and currency bridge',()=>{
+ const raw={...integratedHistory('raw'),code:'hk:00700'},history={...integratedHistory('qfq'),code:'hk:00700'};
+ const result={code:raw.code,status:'ready',quote:{valid:true,currency:'HKD',instrument_id:raw.code},snapshot:{code:raw.code,market:'hk',currency:'CNY',cutoff:raw.actual_end+'T15:00:00+08:00',snapshot_id:'s',binding:{shares:{value:10},quote:{trade_date:raw.actual_end}}},assumptions:{revision:1,cases:[{shares:10}]},report:{snapshot_id:'s',assumptions_revision:1,valuation_state:'conditional',comparison:{reference_value:80,conditional_price:56},listing:{ready:false,quote_currency:'HKD'}}} as unknown as ValueResearchResult;
+ expect(valueChartLevels(result,raw,history,'qfq',true).levels).toEqual([]);
+});

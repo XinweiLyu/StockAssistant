@@ -1,10 +1,12 @@
+import {useMarketPresentation,currencyUnit} from './MarketContext';
 import {useState} from 'react';
 import type {ValueStrategy,ValueScenario} from '../../types/aShareValue';
 const labels:Record<string,string>={conservative:'较保守历史锚点',base:'中间历史锚点',upside:'较有利历史锚点',
  fact:'现状资料',delivery:'输入送达',assumption:'未来假设',method:'方法适配',revenue:'收入',net_profit:'归母利润',operating_cashflow:'经营现金流',capex:'资本开支',
  pending:'待到期/待披露',matured:'已到期对照',insufficient:'资料不足',breached:'需复核',observed:'本次未触及条件'};
-const format=(n?:number|null,unit='CNY')=>n==null||!Number.isFinite(n)?'待补齐':unit==='ratio'?`${(n*100).toFixed(1)}%`:unit==='days'?`${n.toFixed(1)}天`:Math.abs(n)>=1e8?`${(n/1e8).toFixed(2)}亿元`:`${n.toLocaleString('zh-CN',{maximumFractionDigits:2})}元`;
+const formatAmount=(n?:number|null,unit='CNY')=>n==null||!Number.isFinite(n)?'待补齐':unit==='ratio'?`${(n*100).toFixed(1)}%`:unit==='days'?`${n.toFixed(1)}天`:Math.abs(n)>=1e8?`${(n/1e8).toFixed(2)}亿${currencyUnit(unit)}`:`${n.toLocaleString('zh-CN',{maximumFractionDigits:2})}${currencyUnit(unit)}`;
 export default function ValueStrategyPanel({strategy:s}:{strategy:ValueStrategy}){
+ const {financialCurrency}=useMarketPresentation();const format=(n?:number|null,unit=financialCurrency)=>formatAmount(n,unit);
  const [scenario,setScenario]=useState<ValueScenario>('base');const c=s.company_drivers,m=s.monitoring,e=s.expectations;
  const selected=c.projections.find(p=>p.scenario===scenario)||c.projections[0];
  return <section aria-label="经营底稿与持有复核" className="am-value-holding">

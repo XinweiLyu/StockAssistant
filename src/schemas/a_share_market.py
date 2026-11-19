@@ -24,9 +24,10 @@ class MarketModel(BaseModel):
 
 
 class MarketStock(MarketModel):
-    code: str = Field(pattern=r'^(\d{6}|DEMO\d{3})$')
+    code: str = Field(pattern=r'^(\d{6}|DEMO\d{3}|us:[A-Z][A-Z0-9]*(?:[.\-][A-Z0-9]+)?|hk:\d{5})$')
     name: str
-    exchange: Literal['SSE','SZSE','BSE','unknown'] = 'unknown'
+    aliases: list[str] = Field(default_factory=list,max_length=100)
+    exchange: str = 'unknown'
     board: Literal['main','growth','star','beijing','unknown'] = 'unknown'
     st: bool | None = None
     listed_date: str | None = None
@@ -34,6 +35,13 @@ class MarketStock(MarketModel):
     identity_conflict: bool = False
     source: str
     fetched_at: str
+    market: str = 'cn'
+    symbol: str | None = None
+    instrument_id: str | None = None
+    currency: str | None = None
+    financial_currency: str | None = None
+    timezone: str | None = None
+    asset_type: str = 'stock'
 
 
 class MarketQuote(MarketModel):
@@ -89,6 +97,9 @@ class SectorRecord(MarketModel):
 
 
 class HistoryPage(MarketModel):
+    market: str | None = None
+    currency: str | None = None
+    timezone: str | None = None
     code: str
     items: list[MarketBar] = Field(default_factory=list)
     warmup_items: list[MarketBar] = Field(default_factory=list)

@@ -26,6 +26,7 @@ function ASharePage() {
   const [busy, setBusy] = useState(false);
   const [accounts, setAccounts] = useState<PortfolioAccountItem[]>([]);
   const [selectedCode, setSelectedCode] = useState('');
+  const [workspaceMarket,setWorkspaceMarket]=useState<'cn'|'hk'|'us'>(()=>{try{const m=localStorage.getItem('assistant-market');return m==='hk'||m==='us'?m:'cn';}catch{return 'cn';}});
   const [selectedStrategy, setSelectedStrategy] = useState<string>();
   const [stockNavigationRevision, setStockNavigationRevision] = useState(0);
   const [observations, setObservations] = useState<Observation[]>([]);
@@ -82,7 +83,7 @@ function ASharePage() {
   const report = board.report;
   return <AppPage className="a-share-page">
     <div className="as-heading">
-      <div><p className="as-eyebrow">A SHARE · RESEARCH WORKSPACE</p><h1>A股交易助手</h1><p className="as-muted">盘后研究，盘中检查。把规则、证据和账户约束放在一起。</p></div>
+      <div><p className="as-eyebrow">MARKETS · RESEARCH WORKSPACE</p><h1>交易助手</h1><p className="as-muted">盘后研究，盘中检查。把规则、证据和账户约束放在一起。</p></div>
       <div className="as-actions"><span className="as-chip">{modes[board.settings.mode]}</span><Button size="sm" variant="secondary" onClick={() => void refresh()} aria-label="刷新页面"><RefreshCw size={15} /></Button><Button size="sm" disabled={busy || board.job.state === 'running'} onClick={() => void sync('daily')}>同步盘后研究</Button></div>
     </div>
     {board.settings.mode === 'demo' && <div className="as-demo">演示股票、行业和交易日历均为虚构样本，仅用于体验功能。</div>}
@@ -91,13 +92,15 @@ function ASharePage() {
     <div className="as-tabs" role="tablist">{['市场与候选', '持仓风险', '资讯证据', '复盘记录', '设置与数据'].map(name => <button role="tab" aria-selected={tab === name} className={tab === name ? 'active' : ''} key={name} onClick={() => changeTab(name)}>{name}</button>)}</div>
     {board.job.state === 'running' && <div className="as-progress" aria-live="polite"><RefreshCw size={15} className="animate-spin" /><span>{board.job.message} · {board.job.completed}/{board.job.total || '准备中'}</span></div>}
     {tab === '市场与候选' && <>
-      <InvestmentWorkspace key={board.settings.mode} board={board} selectedCode={selectedCode} selectedStrategy={selectedStrategy} navigationRevision={stockNavigationRevision} onSelectStock={code => { setSelectedCode(code); setSelectedStrategy(undefined); }} onResearch={researchStock} onWatchlist={watchStock} />
+      <InvestmentWorkspace key={board.settings.mode} board={board} selectedCode={selectedCode} selectedStrategy={selectedStrategy} navigationRevision={stockNavigationRevision} onSelectStock={code => { setSelectedCode(code); setSelectedStrategy(undefined); }} onResearch={researchStock} onWatchlist={watchStock} onMarketChange={setWorkspaceMarket} />
+      {workspaceMarket==='cn'&&<>
       <div className="as-overview"><div><span>最近完整交易日</span><strong>{report?.as_of || '待同步'}</strong></div><div><span>市场环境</span><strong>{report?.market_ok === true ? '允许继续检查条件' : report?.market_ok === false ? '暂停新增买入条件' : '资料不足，暂停新条件'}</strong></div><div><span>同日有效样本</span><strong>{report?.sample_size || 0}<small> 只</small></strong></div><div><span>后台监控</span><strong>{board.schedule.running ? '服务运行中' : '尚未启用'}<small> · 每5分钟</small></strong></div></div>
       <div className="as-research-grid"><section><div className="as-section-heading"><div><h2>规则研究候选</h2><p>突破前一日高点且不超过1%，仍需报价、风险与账户检查。</p></div><div className="as-actions"><Button size="sm" variant="ghost" disabled={!report} onClick={() => void exportFile('csv')}><Download size={14} />CSV</Button><Button size="sm" variant="secondary" disabled={!report} onClick={() => void exportFile('markdown')}>研究报告</Button></div></div>
         {!report?.candidates.length ? <div className="as-empty"><h3>尚未生成研究候选</h3><p>先同步完整日线。真实模式需至少30只同日有效样本，条件不满足时保留空结果。</p></div> : <div className="as-table-wrap"><table className="as-table"><thead><tr><th>股票 / 规则</th><th>得分</th><th>20日表现</th><th>状态</th><th>突破观察价</th><th /></tr></thead><tbody>{report.candidates.map(c => <tr key={`${c.code}-${c.strategy}`}><td><button className="as-stock" onClick={() => void details(c)}>{c.name}<span>{c.code} · {c.strategy === 'trend_v1' ? '个股趋势' : '行业结合'}</span></button></td><td>{c.score.toFixed(1)}</td><td>{pct(c.r20)}</td><td><span className={`as-state ${c.check?.status || 'observe'}`}>{states[c.check?.status || 'observe']}</span></td><td>¥{c.high.toFixed(2)}</td><td><button aria-label={`查看${c.name}详情`} onClick={() => void details(c)}><ChevronRight size={18} /></button></td></tr>)}</tbody></table></div>}
         <div className="as-footnote">得分是研究池内的相对排名。策略尚未证明盈利优势；提示不代表成交。</div>
       </section><aside><h2>行业观察</h2><p className="as-muted">同一分类体系下比较20/60日趋势</p>{report?.sectors.slice(0, 12).map((s, i) => <div className="as-sector" key={s.code}><span className="as-sector-rank">{String(i + 1).padStart(2, '0')}</span><div><b>{s.name}</b><div className="as-bar"><div style={{ width: `${s.strength || 0}%` }} /></div></div><strong>{s.strength?.toFixed(0) || '—'}</strong></div>)}{!report?.sector_ready && <p className="as-footnote">至少10个同分类行业有完整历史后启用行业规则。</p>}<hr /><h3>当前缺失与约束</h3>{(report?.limitations || ['尚未准备好完整日线及市场基准']).map(s => <p className="as-footnote" key={s}>{s}</p>)}</aside></div>
       <section className="as-notifications"><h2>状态变化</h2>{board.alerts.slice(0, 5).map(a => <div key={a.id}><span>{a.payload.code || '研究'} · {states[a.payload.message] || a.payload.message}</span><time>{new Date(a.created_at).toLocaleString('zh-CN')}</time></div>)}{!board.alerts.length && <p className="as-muted">状态变化后记录提醒；相同状态不反复提醒。</p>}</section>
+      </>}
     </>}
     {tab === '持仓风险' && <section><div className="as-section-heading"><div><h2>账户与持仓约束</h2><p>{board.portfolio.demo ? '演示账户' : '使用 DSA 的手动账户与成交记录'} · 可卖数量需每日核实</p></div><Link to="/portfolio" className="as-link">录入账户 / 现金 / 成交 <ArrowUpRight size={15} /></Link></div><div className="as-overview"><div><span>参考净值（元）</span><strong>{money(board.portfolio.nav)}</strong></div><div><span>现金（元）</span><strong>{money(board.portfolio.cash)}</strong></div><div><span>账户完整度</span><strong>{board.portfolio.complete ? '已有参考数据' : '缺失项待补充'}</strong></div><div><span>单只 / 行业 / 总仓位上限</span><strong>{pct(board.settings.risk.stock_cap)} / {pct(board.settings.risk.sector_cap)} / {pct(board.settings.risk.total_cap)}</strong></div></div>
       {board.holdings.map(h => <article className="as-holding" key={h.code}><div><h3>{h.code} · {h.action}</h3><p>持股 {h.quantity} · 可卖 {h.sellable ?? '待确认'} · 止损参考 {money(h.stop)}</p><p className="as-footnote">{h.reasons.join('；') || '等待交易者自行决策'}</p></div><Button size="sm" variant="secondary" onClick={() => setConstraint({ code: h.code, sellable: h.sellable?.toString() || '', stop: h.stop?.toString() || '', note: '' })}>核实可卖数量与参考价</Button></article>)}

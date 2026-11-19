@@ -806,7 +806,9 @@ class AssistantService:
                 # recent120-day evidence; explicitly withhold the extra facts.
                 features['long_cycle_status']='invalid_history'
             digest=hashlib.sha256(json.dumps([daily,raw['source'],qfq['adjustment_basis'],features],sort_keys=True).encode()).hexdigest()
-            return PriceContext(code=code,anchor_date=end,reference_price=reference,data_hash=digest,adjustment_basis=qfq['adjustment_basis'],features=features,raw_anchor=reference,qfq_anchor=qfq_map[end]['close'],source=raw['source'],demo=profile=='demo').model_dump()
+            currency=self.market.stock(code).get('currency') if getattr(self.market,'market_name',None) else 'CNY'
+            if not currency:return None
+            return PriceContext(code=code,anchor_date=end,reference_price=reference,currency=currency,data_hash=digest,adjustment_basis=qfq['adjustment_basis'],features=features,raw_anchor=reference,qfq_anchor=qfq_map[end]['close'],source=raw['source'],demo=profile=='demo').model_dump()
         except (ValueError,KeyError,TypeError): return None
 
     @settings_locked

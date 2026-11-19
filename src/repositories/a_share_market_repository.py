@@ -193,7 +193,8 @@ class MarketRepository:
         if codes is not None: filters.append(CATALOG.c.code.in_(codes))
         if query.q:
             escaped=query.q.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')
-            filters.append(or_(CATALOG.c.code.contains(escaped,escape='\\'),CATALOG.c.name.contains(escaped,escape='\\')))
+            filters.append(or_(CATALOG.c.code.contains(escaped,escape='\\'),CATALOG.c.name.contains(escaped,escape='\\'),
+                func.json_extract(CATALOG.c.payload,'$.aliases').contains(escaped,escape='\\')))
         if query.board:
             filters.append(CATALOG.c.board==query.board)
         if query.st is not None:

@@ -11,6 +11,7 @@ vi.mock('../../../api/aShareMarket', () => ({
 }));
 
 beforeEach(() => {
+  localStorage.clear();
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-10-13T01:30:00Z'));
   vi.mocked(aShareMarketApi.stocks).mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 });

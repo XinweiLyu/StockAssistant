@@ -8,8 +8,8 @@ DEBT=('short_debt','long_debt','bonds','lease_liabilities','noncurrent_due_withi
 def amounts(group, names, period=None):
     rows=[group.get(k) or {} for k in names]
     if not rows or any(not isinstance(f.get('value'),(int,float)) or isinstance(f.get('value'),bool)
-        or not isfinite(f['value']) or f.get('unit')!='CNY' or not f.get('fact_ids') for f in rows):return None
-    if any(any(f.get(k)!=rows[0].get(k) for k in ('period','vendor','scope')) for f in rows):return None
+        or not isfinite(f['value']) or not isinstance(f.get('unit'),str) or len(f['unit'])!=3 or not f['unit'].isupper() or not f.get('fact_ids') for f in rows):return None
+    if any(any(f.get(k)!=rows[0].get(k) for k in ('period','vendor','scope','unit')) for f in rows):return None
     if period and rows[0].get('period')!=period:return None
     if rows[0].get('scope')!='consolidated':return None
     for name,f in zip(names,rows):
@@ -31,6 +31,7 @@ def build_economic_analysis(view, model):
                 value=calculate([f['value'] for f in rows])
                 if not isfinite(value):raise ValueError()
             except (ValueError,ZeroDivisionError,TypeError):value=None;reason='分母非正或输入不适合该指标'
+        if unit=='CNY':unit=view.get('currency') or 'CNY'
         metrics[key]=dict(label=label,value=value,unit=unit,period=period,formula=formula,
             vendor=rows[0].get('vendor') if rows else None,
             fact_ids=list(dict.fromkeys(i for f in rows or [] for i in f['fact_ids'])),reason=reason,limitation=limitation)

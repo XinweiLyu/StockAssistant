@@ -27,6 +27,15 @@ def select_economic_model(industry, business_evidence, override=None):
             model = 'unresolved'
         else:
             model = next((k for k, (names, _, _) in PROFILES.items() if any(word in name for word in names.split())), None)
+    elif (industry or {}).get('classification')=='yahoo-industry':
+        import re
+        mappings=[('bank',r'\bBank'),('asset_management',r'Asset Management'),('securities',r'Capital Markets'),
+            ('life_insurance',r'Life Insurance'),('nonlife_insurance',r'Property.*Casualty'),
+            ('asset_holding',r'Real Estate|REIT|Conglomerate'),('utility',r'Utilities|Regulated Electric|Water Utilities'),
+            ('cyclical',r'Oil|Gas|Mining|Gold|Copper|Aluminum|Steel|Coal|Chemicals|Marine Shipping'),
+            ('growth',r'Software|Semiconductor|Biotechnology|Internet Content'),
+            ('operating',r'Consumer Electronics|Beverage|Food|Restaurant|Retail|Household|Auto|Apparel|Packaging|Machinery|Drug Manufacturers|Medical Devices|Business Services')]
+        model=next((key for key,pattern in mappings if re.search(pattern,name,re.I)),None)
     methods, risks = PROFILES.get(model, ('', [], ['需先核实主营及经济模型；不能自动套用通用估值']))[1:]
     return dict(model=model or 'unresolved', industry=name, allowed_methods=methods, checklist=risks,
                 mapping_version='eastmoney-industry-value-v1', evidence_ids=[e.get('id') for e in business_evidence if e.get('id')],

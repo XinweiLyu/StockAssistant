@@ -1,13 +1,13 @@
 export type Adjust = 'raw' | 'qfq';
 export interface MarketBar { date: string; open: number; high: number; low: number; close: number; volume?: number | null; amount?: number | null }
-export interface MarketQuote { price: number; change?: number | null; source: string; source_time?: string | null; fetched_at: string; trade_date?: string | null }
+export interface MarketQuote { currency?:string;price: number; change?: number | null; source: string; source_time?: string | null; fetched_at: string; trade_date?: string | null }
 export interface Sector { sector_id: string; name: string; code: string; kind: 'industry'|'concept'; classification: string; source: string; change: number|null; fetched_at: string; source_time?: string|null; history_as_of?: string; membership_version?: string|null; member_breadth?: { total:number;up:number;down:number;flat:number;unknown:number } }
-export interface MarketStock { code: string; name: string; board?: string; exchange?: string; st?: boolean|null; identity_verified?: boolean; source: string; quote: MarketQuote|null; industries: Sector[]; concepts: Sector[]; demo?: boolean }
+export interface MarketStock { market?:string;symbol?:string;currency?:string|null;financial_currency?:string|null;timezone?:string|null;asset_type?:string;code: string; name: string; board?: string; exchange?: string; st?: boolean|null; identity_verified?: boolean; source: string; quote: MarketQuote|null; industries: Sector[]; concepts: Sector[]; demo?: boolean }
 export interface Coverage { catalog_total:number; attempted:number; valid:number; excluded:number; unverified:number; failed:number; pending:number; state:string; as_of?:string|null }
 export interface CatalogPage { items:MarketStock[];total:number;page:number;page_size:number;demo?:boolean;coverage?:Coverage }
 export interface SectorMembersPage extends CatalogPage { membership:{codes:string[];version:string|null;fetched_at?:string|null;state:'pending'|'ready'|'failed';source?:string|null;error?:string|null;retry_at?:string|null;task_id?:string;refreshing?:boolean} }
-export interface HistoryPage { code:string; items:MarketBar[]; warmup_items?:MarketBar[]; adjust:Adjust; source?:string|null; adjustment_basis?:string|null; requested_start:string;requested_end:string;actual_start?:string|null;actual_end?:string|null;state:string;fetched_at?:string|null;task_id?:string|null;demo?:boolean;limitations:string[] }
-export interface PriceContext { code:string;anchor_date:string;reference_price:number;currency:'CNY';price_basis:'raw';data_hash:string;adjustment_basis:string;raw_anchor?:number|null;qfq_anchor?:number|null;demo?:boolean }
+export interface HistoryPage {market?:string|null;currency?:string|null;timezone?:string|null;code:string; items:MarketBar[]; warmup_items?:MarketBar[]; adjust:Adjust; source?:string|null; adjustment_basis?:string|null; requested_start:string;requested_end:string;actual_start?:string|null;actual_end?:string|null;state:string;fetched_at?:string|null;task_id?:string|null;demo?:boolean;limitations:string[] }
+export interface PriceContext { code:string;anchor_date:string;reference_price:number;currency:string;price_basis:'raw';data_hash:string;adjustment_basis:string;raw_anchor?:number|null;qfq_anchor?:number|null;demo?:boolean }
 export interface AITradeLevels { horizon_sessions:number;entry_low:number;entry_high:number;stop_reference:number;sell_low:number;sell_high:number;conditions:string[];invalidation:string[];sources:string[] }
 export interface PriceForecast { scenario:'bear'|'base'|'bull';horizon_sessions:number;low:number;high:number;conditions:string[];sources:string[] }
 export interface PriceScenarioResult { context?:PriceContext|null;trade_levels:AITradeLevels|null;forecasts:PriceForecast[];status:string;model?:string;generated_at?:string;message?:string;limitations?:string[] }
@@ -22,7 +22,7 @@ export interface QuantForecast {
   validation:{state:'measured'|'insufficient';samples:number;coverage_samples?:number|null;coverage:number|null;mean_absolute_error:number|null;baseline_mean_absolute_error:number|null;method:string};
   points:QuantForecastPoint[];
 }
-export interface QuantOutlook {
+export interface QuantOutlook {market?:string;currency?:string;
   code:string;status:'pending'|'ready'|'partial'|'insufficient'|'failed';version:string;as_of:string;generated_at:string;history_sessions:number;
   reference_price:number|null;price_basis:'raw';source:string|null;adjustment_basis:string|null;raw_anchor:number|null;qfq_anchor:number|null;data_hash:string;demo:boolean;
   trends:{period:number;ma:number|null;distance:number|null;slope:number|null;state:'up'|'down'|'range'|'insufficient'}[];
@@ -76,7 +76,7 @@ export interface IntegratedPlan {
   reward_risk:number|null;net_reward_risk?:number|null;min_reward_risk:number;rejection_reasons:string[];
 }
 export interface IntegratedRole {role:string;label:string;status:string;claims:{text:string;sources:string[]}[];message?:string}
-export interface IntegratedReport {
+export interface IntegratedReport {market?:string;currency?:string;
   code:string;data_hash:string;status:string;model?:string;generated_at:string;anchor_date:string;reference_price:number;
   history_binding:IntegratedHistoryBinding;calibrated:boolean;calls:number;extraction_calls:number;expected_calls:number;cached:boolean;
   timing?:{started_at:string;elapsed_seconds:number;role_durations:Record<string,number>};

@@ -163,7 +163,7 @@ class ValueResearchService:
         from src.services.a_share_value_strategy import build_value_strategy
         strategy=build_value_strategy(dict(financial_view=view,economic_model=model))
         evidence.append(dict(id='VALUE_STRATEGY',source='派生经营底稿，须引用底层原始事实',content=json.dumps(strategy,ensure_ascii=False)))
-        missing = []
+        missing = list(data.get('missing', []))
         cached_disclosures=next((c for c in data.get('coverage',[]) if c.get('category')=='disclosures' and c.get('cached')),None)
         if cached_disclosures:
             missing.append(f"公告接口本次失败；使用 {cached_disclosures.get('cached_at') or '此前'} 已保存公告，最新披露完整性待核实")
@@ -182,7 +182,7 @@ class ValueResearchService:
         current = self._latest('value_snapshot', code)
         if current and current['snapshot_id'] == snapshot_id:
             return current
-        snapshot = ValueSnapshot(snapshot_id=snapshot_id, code=code, name=stock['name'], cutoff=cutoff,
+        snapshot = ValueSnapshot(**(self.assistant.value_metadata(code) if hasattr(self.assistant,'value_metadata') else {}),snapshot_id=snapshot_id, code=code, name=stock['name'], cutoff=cutoff,
             facts=facts, financial_view=view, economic_model=model, peers=peers, evidence=evidence,
             events=data.get('events', []), distributions=data.get('distributions', []), cases=cases, binding=binding, missing=missing).model_dump()
         self.assistant.repo.append(self.profile, 'value_snapshot', self.key(code), snapshot)
@@ -448,7 +448,7 @@ class ValueResearchService:
 
     @settings_locked
     def supplement(self, code, request):
-        self._require_snapshot(code, request.snapshot_id)
+        snapshot=self._require_snapshot(code, request.snapshot_id)
         now = self.now()
         items = self.assistant.repo.latest(self.profile, 'value_supplements', key=self.key(code), default=[])
         forbidden = {'identity', 'identity_verified', 'st', 'major_risk', 'permissions'}
@@ -466,8 +466,8 @@ class ValueResearchService:
             if not period:
                 raise ValueError('报告期无效')
             content = digest(f)
-            item = ValueFact(fact_id='VU'+content[:20], content_hash=content, code=code,
-                metric=f['metric'], value=f['value'], unit=f['unit'], report_period=period[:10], period_end=period[:10],
+            item = ValueFact(**({'market':snapshot['market']} if snapshot.get('market') in ('hk','us') else {}),fact_id='VU'+content[:20], content_hash=content, code=code,
+                currency=f.get('currency','CNY'),metric=f['metric'], value=f['value'], unit=f['unit'], report_period=period[:10], period_end=period[:10],
                 period_basis=f['period_basis'], scope=f['scope'], attribution=f['attribution'],
                 source='user_attested/'+f['title'], raw_field=f['metric'], published_at=stamp(f['published_at']),
                 observed_at=now, available_at=now, vintage_quality='user_attested', url=f['url'], quote=f['quote'],
@@ -500,7 +500,19 @@ class ValueResearchService:
             v = next((v for v in result['valuation_cases'] if case and v['method'] == case['method'] and v['scenario'] == case['scenario']), {})
             if case:
                 holding_inputs = {k:h[k] for k in ('realization_factor', 'costs_per_share') if h.get(k) is not None}
-                result['holding_cases'].append(evaluate_holding(case | holding_inputs | dict(price=snapshot['binding']['quote'].get('price')), v, snapshot['cutoff'][:10], h.get('months')))
+                listing=snapshot['binding'].get('listing',{});offshore=snapshot.get('market','cn')!='cn'
+                if offshore and not listing.get('ready'):
+                    result['holding_cases'].append(dict(months=h['months'],method=case['method'],scenario=case.get('scenario','base'),state='blocked',reason='上市股权/汇率绑定未核实',price=None,intrinsic_value=None,dividends=None,gross_return=None,net_return=None))
+                    continue
+                factor=listing['rate']*listing['underlying_per_listed'] if offshore else 1.
+                price=snapshot['binding']['quote'].get('price')
+                if offshore and holding_inputs.get('costs_per_share') is not None:holding_inputs['costs_per_share']/=factor
+                held=evaluate_holding(case | holding_inputs | dict(price=price/factor if price is not None else None),v,snapshot['cutoff'][:10],h.get('months'))
+                if offshore:
+                    for key in ('price','intrinsic_value','dividends'):
+                        if held.get(key) is not None:held[key]*=factor
+                    held.update(currency=listing['quote_currency'],listing=listing,fx_assumption='持有期沿用当前汇率的固定情景；未来汇率并非预测')
+                result['holding_cases'].append(held)
         self.assistant.repo.append(self.profile, 'value_report', self.key(code), result)
         return result
 

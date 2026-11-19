@@ -1,3 +1,4 @@
+import {useMarketPresentation} from './MarketContext';
 import { useEffect, useRef, useState } from 'react';
 import { aShareMarketApi } from '../../api/aShareMarket';
 import type { CatalogPage, Sector } from '../../types/aShareMarket';
@@ -22,11 +23,14 @@ export default function MarketStockBrowser({
   onSelectStock, selectedCode, industry, concept, industries, concepts, sectorStatus,
   onSelectIndustry, onSelectConcept, onClearSector, onRefreshSectors, reloadRevision=0, watchlistSignature='',
 }: Props) {
-  const [q, setQ] = useState('');
-  const [scope, setScope] = useState('all');
+  const {market}=useMarketPresentation();
+  const restore=(key:string,fallback:string)=>{try{return localStorage.getItem('assistant-filter-'+market+'-'+key)??fallback;}catch{return fallback;}};
+  const [q, setQ] = useState(()=>restore('q',''));
+  const [scope, setScope] = useState(()=>restore('scope','all'));
   const watchlistKey = scope === 'watchlist' ? watchlistSignature : '';
-  const [board, setBoard] = useState('');
-  const [sort, setSort] = useState('change');
+  const [board, setBoard] = useState(()=>market==='cn'?restore('board',''):'');
+  const [sort, setSort] = useState(()=>restore('sort','change'));
+  useEffect(()=>{try{for(const [key,value] of Object.entries({q,scope,board,sort}))localStorage.setItem('assistant-filter-'+market+'-'+key,value);}catch{/* Storage is optional. */}},[market,q,scope,board,sort]);
   const [paging, setPaging] = useState({ filter: '', page: 1 });
   const [retry, setRetry] = useState(0);
   const [membershipRetry, setMembershipRetry] = useState(0);
@@ -96,7 +100,7 @@ export default function MarketStockBrowser({
   useEffect(() => {
     const controller = new AbortController();
     const timer = setTimeout(() => {
-      void aShareMarketApi.stocks({
+      void aShareMarketApi.stocks({...(market!=='cn'?{market}:{}),
         q, scope, board: board || undefined, sort, page, page_size: 50,
         industry_id: unknown ? '__unknown__' : industry?.sector_id,
         concept_id: concept?.sector_id,
@@ -121,7 +125,7 @@ export default function MarketStockBrowser({
       });
     }, 200);
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [q, scope, board, sort, page, industry, concept, key, retry, unknown, reloadRevision, watchlistKey, filterKey]);
+  }, [q, scope, board, sort, page, industry, concept, key, retry, unknown, reloadRevision, watchlistKey, filterKey,market]);
 
   useEffect(() => {
     lastChecked.current = Date.now();
@@ -139,18 +143,18 @@ export default function MarketStockBrowser({
   const result = saved.key === key ? saved.result : undefined;
   const membershipState = industryId || conceptId ? membership.filter === filterKey ? membership.state : 'pending' : 'ready';
   return <aside className="am-stock-browser">
-    <div className="am-scope">{[['all', '全部股票'], ['candidates', '规则候选'], ['watchlist', '自选股票']].map(([value, name]) =>
+    <div className="am-scope">{(market==='cn'? [['all', '全部股票'], ['candidates', '规则候选'], ['watchlist', '自选股票']]:[['all','全部股票'],['watchlist','自选股票']]).map(([value, name]) =>
       <button key={value} aria-pressed={scope === value} onClick={() => { setScope(value); setPage(1); }}>{name}</button>)}</div>
     <input className="am-search" aria-label="搜索股票" value={q} placeholder="代码或股票名称" onChange={e => { setQ(e.target.value); setPage(1); }} />
     <div className="am-toolbar">
-      <select aria-label="股票市场" value={board} onChange={e => { setBoard(e.target.value); setPage(1); }}><option value="">所有市场</option><option value="main">沪深主板</option><option value="growth">创业板</option><option value="star">科创板</option><option value="beijing">北交所</option><option value="unknown">市场待核实</option></select>
+      <select disabled={market!=='cn'} aria-label="股票市场" value={board} onChange={e => { setBoard(e.target.value); setPage(1); }}><option value="">所有市场</option><option value="main">沪深主板</option><option value="growth">创业板</option><option value="star">科创板</option><option value="beijing">北交所</option><option value="unknown">市场待核实</option></select>
       <select aria-label="股票排序" value={sort} onChange={e => { setSort(e.target.value); setPage(1); }}><option value="change">涨跌幅</option><option value="amount">成交额</option><option value="code">代码</option><option value="name">名称</option></select>
     </div>
     <div className="am-sector-selects">
       <label>行业<select aria-label="行业筛选" onFocus={onRefreshSectors} value={industryId || ''} onChange={e => { onSelectIndustry(industryOptions.find(s => s.sector_id === e.target.value)); setUnknown(false); setPage(1); }}><option value="">全部行业</option>{industryOptions.map(s => <option key={s.sector_id} value={s.sector_id}>{s.name}</option>)}</select></label>
-      <label>概念<select aria-label="概念筛选" onFocus={onRefreshSectors} value={concept?.sector_id || ''} onChange={e => { onSelectConcept(conceptOptions.find(s => s.sector_id === e.target.value)); setUnknown(false); setPage(1); }}><option value="">全部概念</option>{conceptOptions.map(s => <option key={s.sector_id} value={s.sector_id}>{s.name}</option>)}</select></label>
+      <label>概念<select disabled={market!=='cn'} aria-label="概念筛选" onFocus={onRefreshSectors} value={concept?.sector_id || ''} onChange={e => { onSelectConcept(conceptOptions.find(s => s.sector_id === e.target.value)); setUnknown(false); setPage(1); }}><option value="">全部概念</option>{conceptOptions.map(s => <option key={s.sector_id} value={s.sector_id}>{s.name}</option>)}</select></label>
     </div>
-    <p className="as-footnote am-sector-hint" role={sectorStatus === 'failed' ? 'status' : undefined}>{sectorStatus === 'failed' ? '板块目录更新失败；保留已取得的选项，可点击“刷新筛选项”重试。' : '行业与概念取交集；选择后按需获取成员，完成后自动更新。'}</p>
+    <p className="as-footnote am-sector-hint" role={sectorStatus === 'failed' ? 'status' : undefined}>{sectorStatus === 'failed' ? '板块目录更新失败；保留已取得的选项，可点击“刷新筛选项”重试。' : market==='cn'?'行业与概念取交集；选择后按需获取成员，完成后自动更新。':'行业仅筛选已取得分类的成员；尚未取得完整概念库。'}</p>
     {onRefreshSectors && <button className="am-button" onClick={onRefreshSectors}>刷新筛选项</button>}
     <p className="as-footnote am-auto-refresh">股票列表每 5 分钟自动检查；{saved.key === key && saved.checkedAt ? `最近检查 ${new Date(saved.checkedAt).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit' })}` : '等待首次检查'}。报价以数据源时间为准。</p>
     <label className="am-checkbox"><input aria-label="未知行业" type="checkbox" checked={unknown} onChange={e => { setUnknown(e.target.checked); if(e.target.checked) onSelectIndustry(undefined); setPage(1); }} />仅看行业未归类</label>
@@ -158,6 +162,7 @@ export default function MarketStockBrowser({
     {membershipState === 'pending' && <p className="as-footnote" role="status">正在获取板块成分股，完成后自动更新股票列表…</p>}
     {membershipState === 'failed' && <p role="alert">板块成分股更新失败：{membership.error}。{membership.cached ? '正在显示上一版成员缓存。' : '成员资料尚未取得，此时空列表不代表板块没有股票。'}<button onClick={() => { refreshMembers.current = filterKey; setMembershipRetry(value => value + 1); }}>重试板块成员</button></p>}
     {saved.key === key && saved.error && <p role="alert">{saved.error}；如仍显示股票，列表为上次成功获取的缓存。<button onClick={() => setRetry(value => value + 1)}>重试目录</button></p>}
+    {market!=='cn'&&q.trim()&&<button className="am-button" onClick={()=>{const symbol=q.trim().toUpperCase();const code=market==='hk'?(symbol.replace(/^HK/,'').replace(/\.HK$/,'').padStart(5,'0')):symbol.replace('-','.');onSelectStock(market+':'+code);}}>按代码查询证券身份</button>}
     <div className="am-stock-list">{result?.items?.map(stock => <button className={selectedCode === stock.code ? 'active' : ''} key={stock.code} aria-label={`${stock.name} ${stock.code}`} onClick={() => onSelectStock(stock.code)}><span><b>{stock.name}</b><small>{stock.code} · {stock.identity_verified ? '已核实' : stock.demo ? '虚构' : '身份待核实'}</small></span><span className={stock.quote?.change == null ? '' : stock.quote.change >= 0 ? 'am-up' : 'am-down'}><b>{stock.quote?.price?.toFixed(2) ?? '—'}</b><small>{stock.quote?.change == null ? '资料不足' : `${stock.quote.change >= 0 ? '+' : ''}${(stock.quote.change * 100).toFixed(2)}%`}</small></span></button>)}</div>
     {!result?.items?.length && membershipState === 'ready' && <p className="as-footnote">{result ? '所选范围暂无匹配股票；行业与概念取交集，可清除一个板块或调整搜索、市场、候选范围。' : '查询目录…'}</p>}
     <div className="am-pagination"><button disabled={page <= 1} onClick={() => setPage(current => current - 1)}>上页</button><span>{page} / {Math.max(1, Math.ceil((result?.total || 0) / 50))} · {result?.total || 0} 只</span><button disabled={page * 50 >= (result?.total || 0)} onClick={() => setPage(current => current + 1)}>下页</button></div>

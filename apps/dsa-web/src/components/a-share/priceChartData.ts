@@ -61,6 +61,7 @@ export function integratedChartLayer(state:IntegratedResearchResult|undefined,ra
   if(!report||!binding||state?.status==='stale'||report.stale||!['complete','partial'].includes(report.status)||!raw||!history)return;
   if(!state.bundle||state.bundle.data_hash!==report.data_hash)return;
   if([state?.code,report.code,raw.code,history.code].some(c=>c!==code)||raw.adjust!=='raw'||history.adjust!==adjust)return;
+  if(/^(us|hk):/.test(code)&&(!report.currency||report.currency!==raw.currency||report.currency!==history.currency||report.currency!==state.bundle.context.currency))return;
   if(!['ready','partial'].includes(raw.state)||!['ready','partial'].includes(history.state))return;
   const r=raw.items.at(-1),q=history.items.at(-1);
   const same=(a:number,b:number)=>Number.isFinite(a)&&Number.isFinite(b)&&a>0&&Math.abs(a-b)<=Math.max(1,Math.abs(b))*1e-8;
@@ -102,6 +103,7 @@ export function chartForecast(outlook:QuantOutlook|undefined,raw:HistoryPage|und
   if(!outlook||!raw||!history||!['ready','partial'].includes(outlook.status)||outlook.price_basis!=='raw')return;
   if([outlook.code,raw.code,history.code].some(value=>value!==code)||raw.adjust!=='raw'||history.adjust!==adjust)return;
   if([raw.state,history.state].some(state=>!['ready','partial'].includes(state)))return;
+  if(/^(us|hk):/.test(code)&&(!outlook.currency||outlook.currency!==raw.currency||outlook.currency!==history.currency))return;
   const r=raw.items.at(-1),q=history.items.at(-1),source=priceFamily(outlook.source);
   if(!r||!q||!source||source!==priceFamily(raw.source)||source!==priceFamily(history.source)||r.date!==outlook.as_of||q.date!==outlook.as_of)return;
   const same=(a:number|null|undefined,b:number)=>a!=null&&Number.isFinite(a)&&a>0&&Math.abs(a-b)<=Math.max(1,Math.abs(b))*1e-8;
