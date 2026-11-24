@@ -31,6 +31,7 @@ const TokenUsagePage = lazy(() => import('./pages/TokenUsagePage'));
 const StockScreeningPage = lazy(() => import('./pages/StockScreeningPage'));
 const ASharePage = lazy(() => import('./pages/ASharePage'));
 const DataCenterPage = lazy(() => import('./pages/DataCenterPage'));
+const NewsPage = lazy(() => import('./pages/NewsPage'));
 
 const AppContent: React.FC = () => {
   const location = useLocation();
@@ -89,6 +90,7 @@ const AppContent: React.FC = () => {
 };
 
 const routeChildren = [
+  { path: '/news', element: <NewsPage /> },
   { path: '/assistant', element: <ASharePage /> },
   { path: '/', element: <HomePage /> },
   { path: '/chat', element: <ChatPage /> },

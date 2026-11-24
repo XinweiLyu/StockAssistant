@@ -36,6 +36,10 @@ class IntelligenceDefaultSourcesCreateRequest(BaseModel):
     enabled: Optional[bool] = None
 
 
+class IntelligenceSourceUpdateRequest(BaseModel):
+    enabled: bool
+
+
 class IntelligenceSourceItem(BaseModel):
     id: int
     name: str

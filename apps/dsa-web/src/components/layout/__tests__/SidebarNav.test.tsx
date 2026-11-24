@@ -27,6 +27,10 @@ vi.mock('../../theme/ThemeToggle', () => ({
 }));
 
 describe('SidebarNav', () => {
+  it('provides a dedicated news navigation entry', () => {
+    render(<MemoryRouter initialEntries={['/news']}><SidebarNav /></MemoryRouter>);
+    expect(screen.getByRole('link', { name: '热点资讯' })).toHaveAttribute('href', '/news');
+  });
   it('keeps screening directly after chat without requiring configuration', () => {
     render(<MemoryRouter initialEntries={['/']}><SidebarNav /></MemoryRouter>);
 

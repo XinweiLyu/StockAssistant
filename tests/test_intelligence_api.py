@@ -79,6 +79,69 @@ class IntelligenceApiTestCase(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.json()["error"], "validation_error")
 
+    def test_news_browser_filters_are_applied_before_pagination(self) -> None:
+        sources = []
+        for name, kind, code in [("cn-stock", "rss", "600519"), ("cn-other", "atom", "000807"), ("cn-market", "rss", None)]:
+            response = self.client.post("/api/v1/intelligence/sources", json={
+                "name": name, "url": "https://feeds.example.com/rss.xml", "source_type": kind,
+                "scope_type": "symbol" if code else "market", "scope_value": code, "market": "cn",
+            })
+            self.assertEqual(response.status_code, 200)
+            source_id = response.json()["id"]
+            sources.append(source_id)
+            with patch("src.services.intelligence_service.requests.get", return_value=self._mock_response()):
+                self.assertEqual(self.client.post(f"/api/v1/intelligence/sources/{source_id}/fetch").status_code, 200)
+        filtered = self.client.get("/api/v1/intelligence/items", params={"market": "cn", "symbols": "600519", "page_size": 1}).json()
+        self.assertEqual(filtered["total"], 1)
+        self.assertEqual(filtered["items"][0]["scope_value"], "600519")
+        self.assertEqual(self.client.get("/api/v1/intelligence/items", params={"symbols": ""}).json()["total"], 0)
+        self.assertEqual(self.client.get("/api/v1/intelligence/items", params={"source_type": "atom"}).json()["total"], 1)
+        self.assertEqual(self.client.get("/api/v1/intelligence/items", params={"source_id": sources[0]}).json()["total"], 1)
+
+    def test_source_toggle_does_not_change_other_source_fields(self) -> None:
+        source = self.client.post("/api/v1/intelligence/sources", json={"name": "toggle", "url": "https://feeds.example.com/rss.xml"}).json()
+        disabled = self.client.patch(f"/api/v1/intelligence/sources/{source['id']}", json={"enabled": False})
+        self.assertEqual(disabled.status_code, 200)
+        self.assertFalse(disabled.json()["enabled"])
+        self.assertEqual(disabled.json()["name"], "toggle")
+        self.assertEqual(self.client.patch("/api/v1/intelligence/sources/999999", json={"enabled": True}).status_code, 404)
+
+    def test_qualified_watchlist_symbols_match_same_market_source_aliases(self) -> None:
+        for market, stored, requested in [("us", "AAPL", "us:AAPL"), ("hk", "0700.HK", "hk:00700")]:
+            response = self.client.post("/api/v1/intelligence/sources", json={
+                "name": market, "url": "https://feeds.example.com/rss.xml", "scope_type": "symbol", "scope_value": stored, "market": market,
+            })
+            with patch("src.services.intelligence_service.requests.get", return_value=self._mock_response()):
+                self.client.post(f"/api/v1/intelligence/sources/{response.json()['id']}/fetch")
+            result = self.client.get("/api/v1/intelligence/items", params={"market": market, "symbols": requested}).json()
+            self.assertEqual(result["total"], 1)
+            self.assertEqual(result["items"][0]["market"], market)
+
+    def test_explicit_disable_survives_auto_bootstrap_and_late_fetch_status(self) -> None:
+        from src.services.intelligence_service import IntelligenceService
+        created = self.client.post('/api/v1/intelligence/sources/defaults', json={'enabled': True}).json()
+        source_id = created['items'][0]['source']['id']
+        self.client.patch(f'/api/v1/intelligence/sources/{source_id}', json={'enabled': False})
+        service = IntelligenceService()
+        service.repo.update_source_status(source_id, status='success')
+        service.ensure_default_sources_enabled()
+        self.assertFalse(service.repo.get_source(source_id).enabled)
+        self.client.patch(f'/api/v1/intelligence/sources/{source_id}', json={'enabled': True})
+        self.assertTrue(service.repo.get_source(source_id).enabled)
+
+    def test_watchlist_aliases_are_symmetric_with_the_assistant(self) -> None:
+        cases = [('cn', 'CN:600519', '600519'), ('hk', '700', 'hk:00700'), ('hk', '0700', 'hk:00700'), ('hk', 'HK00700', 'hk:00700'), ('us', 'BRK-B', 'us:BRK.B')]
+        for index, (market, stored, requested) in enumerate(cases):
+            with self.subTest(market=market, stored=stored):
+                source = self.client.post('/api/v1/intelligence/sources', json={
+                    'name': f'alias-{index}', 'url': 'https://feeds.example.com/rss.xml',
+                    'market': market, 'scope_type': 'symbol', 'scope_value': stored,
+                }).json()
+                with patch('src.services.intelligence_service.requests.get', return_value=self._mock_response()):
+                    self.client.post(f"/api/v1/intelligence/sources/{source['id']}/fetch")
+                result = self.client.get('/api/v1/intelligence/items', params={'market': market, 'symbols': requested, 'source_id': source['id']}).json()
+                self.assertEqual(result['total'], 1)
+
     def test_duplicate_source_name_returns_validation_error(self) -> None:
         payload = {"name": "dupe", "url": "https://feeds.example.com/rss.xml", "scope_type": "market"}
         first = self.client.post("/api/v1/intelligence/sources", json=payload)

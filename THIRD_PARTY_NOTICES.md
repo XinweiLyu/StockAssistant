@@ -41,3 +41,7 @@ modification status.
   research workflow, charts, API, tests, configuration examples and documentation.
 - This initial repository import is a source snapshot, rather than a full copy of
   the upstream Git history.
+- Selected stability fixes from revisions `bd7b76799484`, `626eec11ff53`,
+  `2186f455fb83`, `15c7cdc0ca07`, `3acb2c5b585c`, `76c59e8bd6c3` and
+  `7b16d647ae7e` were adapted on 2026-11-24. Scope and retained differences are
+  documented in `docs/upstream-stability.md`; this is not a full upstream sync.

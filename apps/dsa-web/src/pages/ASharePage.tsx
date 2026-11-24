@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
+import { readNewsStockLink } from '../components/news/newsUtils';
 import { RefreshCw, Download, ArrowUpRight, ChevronRight, X } from 'lucide-react';
 import InvestmentWorkspace from '../components/a-share/InvestmentWorkspace';
 import apiClient from '../api';
@@ -18,6 +19,7 @@ const pct = (v: number | null | undefined) => v == null ? '—' : `${(v * 100).t
 const safeUrl = (s?: string) => { try { const u = new URL(s || ''); return ['https:', 'http:'].includes(u.protocol) ? u.href : undefined; } catch { return undefined; } };
 
 function ASharePage() {
+  const [searchParams] = useSearchParams();
   const [board, setBoard] = useState<AssistantBoard | null>(null);
   const [draft, setDraft] = useState<AssistantSettings | null>(null);
   const [tab, setTab] = useState('市场与候选');
@@ -29,6 +31,13 @@ function ASharePage() {
   const [workspaceMarket,setWorkspaceMarket]=useState<'cn'|'hk'|'us'>(()=>{try{const m=localStorage.getItem('assistant-market');return m==='hk'||m==='us'?m:'cn';}catch{return 'cn';}});
   const [selectedStrategy, setSelectedStrategy] = useState<string>();
   const [stockNavigationRevision, setStockNavigationRevision] = useState(0);
+  useEffect(() => {
+    const navigation = readNewsStockLink(searchParams);
+    if (navigation) {
+      setSelectedCode(navigation.code); setWorkspaceMarket(navigation.market);
+      setSelectedStrategy(undefined); setStockNavigationRevision(value => value + 1);
+    }
+  }, [searchParams]);
   const [observations, setObservations] = useState<Observation[]>([]);
   const [event, setEvent] = useState<Journal<Evidence> | null>(null);
   const [eventCode, setEventCode] = useState('');

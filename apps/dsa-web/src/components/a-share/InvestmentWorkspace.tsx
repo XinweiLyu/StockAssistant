@@ -69,7 +69,8 @@ function InvestmentWorkspaceContent({market='cn',board,selectedCode,selectedStra
     return ()=>{controller.abort();if(timer)clearTimeout(timer);document.removeEventListener('visibilitychange',onVisible);};
   },[board.settings.mode,market]);
   const validSelection=market!=='cn'?selectedCode.startsWith(market+':'):board.settings.mode==='demo'?selectedCode.startsWith('DEMO'): /^\d{6}$/.test(selectedCode);
-  const code=validSelection?selectedCode:board.report?.candidates[0]?.code||'';
+  const unavailableRealSelection=market==='cn'&&board.settings.mode==='demo'&&/^\d{6}$/.test(selectedCode);
+  const code=unavailableRealSelection?'':validSelection?selectedCode:board.report?.candidates[0]?.code||'';
   const candidate=board.report?.candidates.find(c=>c.code===code&&(!validSelection||!selectedStrategy||c.strategy===selectedStrategy)),research=board.research?.find(r=>r.payload.code===code)?.payload;
   const selectSector=(s:Sector)=>setSector(s);
   const clear=()=>{setIndustry(undefined);setConcept(undefined);setSector(undefined);};
@@ -92,6 +93,7 @@ function InvestmentWorkspaceContent({market='cn',board,selectedCode,selectedStra
       <div className="am-workspace-grid">
         <MarketStockBrowser key={browserRevision} reloadRevision={priceReload} watchlistSignature={[...board.settings.watchlist].sort().join('|')} selectedCode={code} onSelectStock={onSelectStock} industry={industry} concept={concept} industries={groups.industry} concepts={groups.concept} sectorStatus={sectorStatus} onRefreshSectors={()=>refreshSectors.current()} onSelectIndustry={s=>{setIndustry(s);setSector(s||concept);}} onSelectConcept={s=>{setConcept(s);setSector(s||industry);}} onClearSector={clear}/>
         <div className="am-main">
+          {unavailableRealSelection&&<p role="alert">请求查看 {selectedCode}，但当前为演示模式，不能展示该真实股票。请在“设置与数据”中切换为免费数据后查看。</p>}
           {code?<StockDetail key={code} code={code} candidate={candidate} onWatchlist={onWatchlist} onResearch={onResearch} research={research} events={board.events} onPriceRefresh={refreshPriceList} disabled={!board.settings.research_enabled}/>:<div className="as-empty">从左侧搜索或选择股票，即可在此查看 K 线、指标、AI 价位和证据。</div>}
           <p className="as-footnote am-model-budget">手动模型调用：今日 {board.manual_model_usage??0} 次（不限次，按实际用量计费） · 自动研究上限：{board.model_usage??0} / {board.settings.daily_model_calls??0}</p>
         </div>

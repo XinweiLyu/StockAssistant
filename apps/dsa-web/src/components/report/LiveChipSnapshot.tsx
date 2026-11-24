@@ -12,13 +12,15 @@ const copy = {
 } as const;
 
 export function LiveChipSnapshot({ code, language = 'zh' }: { code: string; language?: ReportLanguage }) {
+  return <StockChipSnapshot key={code} code={code} language={language} />;
+}
+
+function StockChipSnapshot({ code, language }: { code: string; language: ReportLanguage }) {
   const [chip, setChip] = useState<CurrentChip | null>(null);
   const [state, setState] = useState<State>('loading');
   const text = copy[language];
   useEffect(() => {
     const controller = new AbortController();
-    setChip(null);
-    setState('loading');
     getCurrentChip(code, controller.signal).then((value) => {
       if (controller.signal.aborted) return;
       setChip(value);

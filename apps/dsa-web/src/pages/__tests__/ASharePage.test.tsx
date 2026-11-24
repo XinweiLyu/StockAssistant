@@ -20,6 +20,11 @@ describe('A-share research workspace', () => {
     expect(screen.getByText('尚未生成研究候选')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '同步盘后研究' })).toBeEnabled();
   });
+  it('explains why a real stock news link cannot open in demo mode without substituting a demo stock', async () => {
+    render(<MemoryRouter initialEntries={['/assistant?market=cn&stock=600519']}><UiLanguageProvider><ASharePage /></UiLanguageProvider></MemoryRouter>);
+    expect(await screen.findByText(/600519.*演示模式/)).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: '股票研究详情' })).not.toBeInTheDocument();
+  });
   it('offers an explicit retry when the API fails', async () => {
     vi.mocked(apiClient.get).mockRejectedValueOnce(new Error('连接中断'));
     mount();

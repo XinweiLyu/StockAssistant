@@ -38,7 +38,7 @@ class IntelligenceRepository:
                 select(IntelligenceSource).where(IntelligenceSource.name == name).limit(1)
             ).scalar_one_or_none()
 
-    def update_source_enabled(self, source_id: int, enabled: bool) -> None:
+    def update_source_enabled(self, source_id: int, enabled: bool, *, user_choice: bool = False) -> None:
         with self.db.get_session() as session:
             row = session.execute(
                 select(IntelligenceSource).where(IntelligenceSource.id == source_id).limit(1)
@@ -46,6 +46,11 @@ class IntelligenceRepository:
             if row is None:
                 return
             row.enabled = bool(enabled)
+            if user_choice:
+                if not enabled:
+                    row.last_status = 'disabled_by_user'
+                elif row.last_status == 'disabled_by_user':
+                    row.last_status = None
             row.updated_at = datetime.now()
             session.commit()
 
@@ -98,7 +103,9 @@ class IntelligenceRepository:
             ).scalar_one_or_none()
             if row is None:
                 return
-            row.last_status = status
+            # A fetch already in flight must not erase an explicit opt-out.
+            if row.enabled or row.last_status != 'disabled_by_user':
+                row.last_status = status
             row.last_error = error
             if fetched_at is not None:
                 row.last_fetched_at = fetched_at
@@ -158,6 +165,10 @@ class IntelligenceRepository:
         query: Optional[str] = None,
         days: Optional[int] = None,
         published_days: Optional[int] = None,
+        source_type: Optional[str] = None,
+        source_id: Optional[int] = None,
+        symbols: Optional[List[str]] = None,
+        include_global: bool = False,
         page: int = 1,
         page_size: int = 50,
     ) -> Tuple[List[IntelligenceItem], int]:
@@ -171,7 +182,40 @@ class IntelligenceRepository:
             else:
                 conditions.append(IntelligenceItem.scope_value == normalized_scope)
         if market:
-            conditions.append(IntelligenceItem.market == market)
+            conditions.append(IntelligenceItem.market.in_([market, "global"]) if include_global else IntelligenceItem.market == market)
+        if source_type:
+            conditions.append(IntelligenceItem.source_type == source_type)
+        if source_id is not None:
+            conditions.append(IntelligenceItem.source_id == source_id)
+        if symbols is not None:
+            from src.services.market_workspace_symbols import resolve_instrument
+            aliases = set()
+            for symbol in symbols:
+                value = symbol.lower()
+                prefix, separator, tail = value.partition(':')
+                if separator and prefix in {'cn', 'hk', 'us'}:
+                    if market and prefix != market:
+                        continue
+                    value = tail
+                    aliases.add(symbol.lower())
+                aliases.add(value)
+                try:
+                    identity = resolve_instrument(market or prefix, value)
+                except ValueError:
+                    continue
+                code = identity.symbol.lower()
+                aliases.update([code, identity.instrument_id.lower(), identity.source_symbol.lower()])
+                if identity.market == 'cn':
+                    aliases.add('cn:' + code)
+                elif identity.market == 'us':
+                    aliases.update([code.replace('.', '-'), 'us:' + code.replace('.', '-')])
+                elif identity.market == 'hk':
+                    digits = str(int(code))
+                    for width in range(len(digits), 6):
+                        for lead in ('', 'hk', 'hk:'):
+                            aliases.update([lead + digits.zfill(width), lead + digits.zfill(width) + '.hk'])
+            conditions.append(IntelligenceItem.scope_type == "symbol")
+            conditions.append(func.lower(IntelligenceItem.scope_value).in_(aliases))
         if query:
             pattern = f"%{query.strip()}%"
             conditions.append(or_(IntelligenceItem.title.like(pattern), IntelligenceItem.summary.like(pattern)))

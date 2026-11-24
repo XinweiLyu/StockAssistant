@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
 from src.agent.tools.registry import ToolRegistry
+from src.utils.json_utils import normalize_nonfinite
 
 logger = logging.getLogger(__name__)
 
@@ -155,15 +156,15 @@ def serialize_tool_result(result: Any) -> str:
         return json.dumps({"result": None})
     if isinstance(result, str):
         return result
-    if isinstance(result, (dict, list)):
+    if isinstance(result, (dict, list, tuple)):
         try:
-            return json.dumps(result, ensure_ascii=False, default=str)
+            return json.dumps(normalize_nonfinite(result), ensure_ascii=False, default=str, allow_nan=False)
         except (TypeError, ValueError):
             return str(result)
     if hasattr(result, "__dict__"):
         try:
             d = {k: v for k, v in result.__dict__.items() if not k.startswith("_")}
-            return json.dumps(d, ensure_ascii=False, default=str)
+            return json.dumps(normalize_nonfinite(d), ensure_ascii=False, default=str, allow_nan=False)
         except (TypeError, ValueError):
             return str(result)
     return str(result)
@@ -358,7 +359,7 @@ def _redact_json_string_if_possible(text: str) -> str:
     except (TypeError, ValueError, json.JSONDecodeError):
         return text
     try:
-        return json.dumps(_redact_structured_secrets(parsed), ensure_ascii=False, default=str)
+        return serialize_tool_result(_redact_structured_secrets(parsed))
     except (TypeError, ValueError):
         return text
 
@@ -367,7 +368,7 @@ def redact_external_tool_result(result: Any) -> str:
     """Serialize and redact a ToolSurface result before external roundtrip."""
     if isinstance(result, (dict, list, tuple)):
         try:
-            text = json.dumps(_redact_structured_secrets(result), ensure_ascii=False, default=str)
+            text = serialize_tool_result(_redact_structured_secrets(result))
         except (TypeError, ValueError):
             text = serialize_tool_result(result)
     elif isinstance(result, str):
@@ -431,7 +432,7 @@ def redact_diagnostic_value(value: Any, *, limit: int = _SUMMARY_LIMIT) -> str:
         if isinstance(value, str):
             text = _redact_json_string_if_possible(value)
         else:
-            text = json.dumps(_redact_structured_secrets(value), ensure_ascii=False, default=str)
+            text = serialize_tool_result(_redact_structured_secrets(value))
     except Exception:
         try:
             text = str(value)

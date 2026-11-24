@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.intelligence import (
@@ -20,12 +20,41 @@ from api.v1.schemas.intelligence import (
     IntelligenceSourceTemplateCreateRequest,
     IntelligenceSourceTemplateListResponse,
     IntelligenceSourceTestResponse,
+    IntelligenceSourceUpdateRequest,
+    SourceTypeValue,
 )
 from src.services.intelligence_service import IntelligenceService, IntelligenceServiceError
+from src.services.news_refresh_service import NewsRefreshService
 from src.services.run_diagnostics import sanitize_diagnostic_text
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _refresh_service(request: Request) -> NewsRefreshService:
+    # Endpoint handlers are async, so initialization cannot interleave on this loop.
+    if not hasattr(request.app.state, 'news_refresh_service'):
+        request.app.state.news_refresh_service = NewsRefreshService()
+    return request.app.state.news_refresh_service
+
+
+@router.get('/refresh', summary='Read news refresh progress')
+async def refresh_status(request: Request):
+    return _refresh_service(request).status()
+
+
+@router.post('/refresh', summary='Refresh enabled news sources without model calls')
+async def refresh_news(request: Request, background_tasks: BackgroundTasks):
+    return _refresh_service(request).start(background_tasks)
+
+
+@router.patch('/sources/{source_id}', response_model=IntelligenceSourceItem)
+def update_source(source_id: int, request: IntelligenceSourceUpdateRequest):
+    service = IntelligenceService()
+    if service.repo.get_source(source_id) is None:
+        raise _not_found('Intelligence source not found')
+    service.repo.update_source_enabled(source_id, request.enabled, user_choice=True)
+    return service._source_to_dict(service.repo.get_source(source_id))
 
 
 def _bad_request(exc: Exception) -> HTTPException:
@@ -158,13 +187,21 @@ def list_items(
     market: Optional[str] = Query(None),
     query: Optional[str] = Query(None),
     days: Optional[int] = Query(None, ge=1),
+    source_type: Optional[SourceTypeValue] = Query(None),
+    source_id: Optional[int] = Query(None, ge=1),
+    symbols: Optional[str] = Query(None, max_length=6500),
+    include_global: bool = Query(False),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
 ) -> IntelligenceItemListResponse:
+    selected_symbols = None if symbols is None else list(dict.fromkeys(value.strip() for value in symbols.split(',') if value.strip()))
+    if selected_symbols is not None and (len(selected_symbols) > 100 or any(len(value) > 64 for value in selected_symbols)):
+        raise _bad_request(ValueError('At most 100 symbols of at most 64 characters are supported'))
     try:
         return IntelligenceItemListResponse(**IntelligenceService().list_items(
             scope_type=scope_type, scope_value=scope_value, market=market,
             query=query, days=days, page=page, page_size=page_size,
+            source_type=source_type, source_id=source_id, symbols=selected_symbols, include_global=include_global,
         ))
     except Exception as exc:
         raise _internal_error("List intelligence items failed", exc)

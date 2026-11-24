@@ -212,7 +212,7 @@ class IntelligenceService:
             try:
                 existing = self.repo.get_source_by_name(name)
                 if existing is not None:
-                    if not existing.enabled:
+                    if not existing.enabled and existing.last_status != 'disabled_by_user':
                         self.repo.update_source_enabled(existing.id, True)
                         enabled_count += 1
                     continue

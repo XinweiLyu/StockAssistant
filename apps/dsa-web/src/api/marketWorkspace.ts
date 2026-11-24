@@ -8,6 +8,6 @@ export const pathBase=(path:string)=>{
  return marketBase((match?.[1]||'cn') as WorkspaceMarket);
 };
 export const workspaceWatchlist={
- get:async(market:WorkspaceMarket)=>(await apiClient.get<{codes:string[]}>(`/api/v1/market-workspace/${market}/watchlist`)).data.codes,
+ get:async(market:WorkspaceMarket,signal?:AbortSignal)=>(await apiClient.get<{codes:string[]}>(`/api/v1/market-workspace/${market}/watchlist`,{signal})).data.codes,
  change:async(market:WorkspaceMarket,code:string,remove:boolean)=>(await (remove?apiClient.delete:apiClient.post)(`/api/v1/market-workspace/${market}/watchlist/${encodeURIComponent(code)}`)).data,
 };

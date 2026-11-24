@@ -36,6 +36,8 @@ from .realtime_types import CircuitBreaker
 # 配置日志
 logger = logging.getLogger(__name__)
 
+# Omitted means standalone fetching; explicit None means already attempted.
+_REALTIME_QUOTE_UNSET = object()
 
 # === 标准化列名定义 ===
 STANDARD_COLUMNS = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
@@ -869,8 +871,23 @@ class DataFetcherManager:
         cls._daily_source_health.record_success(cls._daily_health_key(fetcher, market))
 
     @classmethod
-    def _record_daily_source_failure(cls, fetcher: BaseFetcher, market: str, error: str) -> None:
-        cls._daily_source_health.record_failure(cls._daily_health_key(fetcher, market), error=error)
+    def _record_daily_source_failure(cls, fetcher: BaseFetcher, market: str, error: str | Exception) -> None:
+        # Import lazily because TushareFetcher inherits BaseFetcher from this module.
+        from .tushare_fetcher import TusharePermissionError
+
+        key = cls._daily_health_key(fetcher, market)
+        current = error
+        visited = set()
+        while isinstance(current, BaseException) and id(current) not in visited:
+            visited.add(id(current))
+            if isinstance(current, TusharePermissionError):
+                # Endpoint permission is not evidence of a provider outage. Preserve
+                # previous network failures and release any half-open probe reservation.
+                cls._daily_source_health.record_inconclusive(key)
+                return
+            current = current.__cause__ or current.__context__
+        reason = summarize_exception(error)[1] if isinstance(error, Exception) else error
+        cls._daily_source_health.record_failure(key, error=reason)
 
     @classmethod
     def reset_daily_source_health(cls) -> None:
@@ -1146,7 +1163,7 @@ class DataFetcherManager:
                     record_count=0,
                 )
                 self._record_daily_source_failure(
-                    fetcher, "cn_index", error_reason
+                    fetcher, "cn_index", exc
                 )
                 logger.warning(
                     "[指数数据源失败 %d/%d] [%s] %s: error_type=%s, reason=%s",
@@ -2087,7 +2104,7 @@ class DataFetcherManager:
                             f"[数据源失败 {attempt}/{total_fetchers}] [{fetcher.name}] {stock_code}: "
                             f"error_type={error_type}, reason={error_reason}"
                         )
-                        self._record_daily_source_failure(fetcher, market, error_reason)
+                        self._record_daily_source_failure(fetcher, market, e)
                         errors.append(error_msg)
                     break
 
@@ -2168,7 +2185,7 @@ class DataFetcherManager:
                     f"[数据源失败 {attempt}/{total_fetchers}] [{fetcher.name}] {stock_code}: "
                     f"error_type={error_type}, reason={error_reason}"
                 )
-                self._record_daily_source_failure(fetcher, market, error_reason)
+                self._record_daily_source_failure(fetcher, market, e)
                 errors.append(error_msg)
                 if attempt < total_fetchers:
                     next_fetcher = fetchers[attempt]
@@ -3918,6 +3935,7 @@ class DataFetcherManager:
         stock_code: str,
         market: str,
         budget_seconds: Optional[float] = None,
+        *, realtime_quote: Any = _REALTIME_QUOTE_UNSET,
     ) -> Dict[str, Any]:
         """HK/US fundamental aggregation via yfinance.
 
@@ -3973,7 +3991,9 @@ class DataFetcherManager:
         # Valuation: reuse realtime quote payload — yfinance returns pe/pb in the
         # same shape as AkShare, so the existing block formatter still works.
         valuation_timeout = min(fetch_timeout, stage_timeout) if stage_timeout > 0 else 0
-        if valuation_timeout > 0:
+        if realtime_quote is not _REALTIME_QUOTE_UNSET:
+            quote_payload, valuation_err, valuation_ms = realtime_quote, None, 0
+        elif valuation_timeout > 0:
             quote_payload, valuation_err, valuation_ms = self._run_with_retry(
                 lambda: self.get_realtime_quote(stock_code),
                 valuation_timeout,
@@ -4261,10 +4281,14 @@ class DataFetcherManager:
     def get_fundamental_context(
         self,
         stock_code: str,
-        budget_seconds: Optional[float] = None
+        budget_seconds: Optional[float] = None,
+        *, realtime_quote: Any = _REALTIME_QUOTE_UNSET,
     ) -> Dict[str, Any]:
         """
         Aggregate fundamental blocks with fail-open semantics.
+
+        Reuse a supplied quote (including None after a failed/disabled fetch).
+        Omit realtime_quote to fetch valuation for standalone callers.
         """
         from src.config import get_config
 
@@ -4283,6 +4307,7 @@ class DataFetcherManager:
                 stock_code,
                 market=market,
                 budget_seconds=budget_seconds,
+                realtime_quote=realtime_quote,
             )
 
         stage_timeout = float(
@@ -4326,7 +4351,9 @@ class DataFetcherManager:
             remaining_seconds = max(0.0, remaining_seconds - consumed_ms / 1000.0)
 
         valuation_timeout = min(fetch_timeout, remaining_seconds)
-        if valuation_timeout > 0:
+        if realtime_quote is not _REALTIME_QUOTE_UNSET:
+            quote_payload, valuation_err, valuation_ms = realtime_quote, None, 0
+        elif valuation_timeout > 0:
             quote_payload, valuation_err, valuation_ms = self._run_with_retry(
                 lambda: self.get_realtime_quote(stock_code),
                 valuation_timeout,
