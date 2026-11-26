@@ -1,6 +1,6 @@
 """Market adapters preserving actual price fields, identity and provenance."""
 from __future__ import annotations
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from data_provider.a_share import number, normalize_spot, normalize_alternate_spot
 from src.schemas.a_share_market import MarketStock, MarketBar, MarketQuote, SectorRecord, HistoryPage
@@ -184,8 +184,16 @@ class MarketProvider:
         a,b=start.replace('-',''),end.replace('-','')
         if source=='tushare':
             ts=code+('.SH' if code.startswith('6') else '.SZ' if code.startswith(('0','3')) else '.BJ')
-            rows=self.provider.call('daily',dict(ts_code=ts,start_date=a,end_date=b),tushare=True)
-            factors=self.provider.call('adj_factor',dict(ts_code=ts,start_date=a,end_date=b),tushare=True) if adjust=='qfq' else []
+            rows,factors=[],[]
+            first,last=max(date.fromisoformat(start),date(1990,1,1)),date.fromisoformat(end)
+            while first<=last:
+                segment_end=min(first+timedelta(days=1825),last)
+                window=dict(ts_code=ts,start_date=first.strftime('%Y%m%d'),end_date=segment_end.strftime('%Y%m%d'))
+                daily=self.provider.call('daily',window,tushare=True)
+                rows.extend(daily)
+                if daily and adjust=='qfq':
+                    factors.extend(self.provider.call('adj_factor',window,tushare=True))
+                first=segment_end+timedelta(days=1)
             bars=normalize_tushare_history(rows,factors,adjust)
             source='tushare/daily+adj_factor' if adjust=='qfq' else 'tushare/daily'
         else:

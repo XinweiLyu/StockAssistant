@@ -108,8 +108,8 @@ class OutlookService:
             start = cutoff.replace(year=cutoff.year - 5).isoformat()
         except ValueError:
             start = cutoff.replace(year=cutoff.year - 5, day=28).isoformat()
-        raw = market.repo.get_history(profile, 'stock:' + code, 'raw', '1900-01-01', end)
-        adjusted = market.repo.get_history(profile, 'stock:' + code, 'qfq', '1900-01-01', end)
+        raw = market.repo.get_history(profile, 'stock:' + code, 'raw', start, end)
+        adjusted = market.repo.get_history(profile, 'stock:' + code, 'qfq', start, end)
         states = []
         if profile != 'demo':
             for basis, cached in [('raw', raw), ('qfq', adjusted)]:

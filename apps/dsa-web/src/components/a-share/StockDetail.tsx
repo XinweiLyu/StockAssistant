@@ -5,7 +5,7 @@ import type {ResearchScope} from '../../types/aShareValue';
 import {useValueResearch} from './useValueResearch';
 import ValueInvestingPanel from './ValueInvestingPanel';
 import {valueChartLevels} from './valueChartData';
-import { useCallback,useEffect,useMemo,useState } from 'react';
+import { useCallback,useEffect,useMemo,useRef,useState } from 'react';
 import { aShareMarketApi } from '../../api/aShareMarket';
 import type { Candidate, RoleResearch, Journal, Evidence } from '../../types/aShare';
 import type { Adjust,MarketStock,PriceScenarioResult,IndicatorSelection,ChartPriceLevel } from '../../types/aShareMarket';
@@ -23,12 +23,14 @@ import { useIntegratedResearch } from './useIntegratedResearch';
 import IntegratedResearchPanel from './IntegratedResearchPanel';
 import ResearchWorkspaceToolbar from './ResearchWorkspaceToolbar';
 import { integratedResearchStatus } from './integratedResearchStatus';
+const HISTORY_START='1900-01-01';
 const marketDay=(zone='Asia/Shanghai')=>new Intl.DateTimeFormat('sv-SE',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 
 const safeUrl=(url?:string)=>{try{const u=new URL(url||'');return ['http:','https:'].includes(u.protocol)?u.href:undefined;}catch{return undefined;}};
 export default function StockDetail({code,candidate,onWatchlist,research,events=[],onPriceRefresh}:{code:string;candidate?:Candidate;onWatchlist:(code:string)=>void;onResearch:(code:string)=>void;research?:RoleResearch;events?:Journal<Evidence>[];disabled?:boolean;remainingCalls?:number;onPriceRefresh?:(code:string)=>void}){
   const presentation=useMarketPresentation(),market=presentation.market;
   const today=()=>marketDay(market==='us'?'America/New_York':market==='hk'?'Asia/Hong_Kong':'Asia/Shanghai');
+  const marketToday=today();
   const since=(days:number)=>new Date(Date.parse(today())-days*86400000).toISOString().slice(0,10);
   const [adjust,setAdjust]=useState<Adjust>('qfq'),[chartType,setChartType]=useState<'candle'|'line'>('candle');
   const [start,setStart]=useState(()=>since(365)),[end,setEnd]=useState(()=>today()),[highlight,setHighlight]=useState(''),[showAI,setShowAI]=useState(true),[showRule,setShowRule]=useState(true),[showReport,setShowReport]=useState(true);
@@ -40,12 +42,30 @@ export default function StockDetail({code,candidate,onWatchlist,research,events=
   const [researchScope,setResearchScope]=useState<ResearchScope>('trading'),[showValue,setShowValue]=useState(false);
   const [integratedHorizon,setIntegratedHorizon]=useState(20),[showIntegrated,setShowIntegrated]=useState(true);
   const integratedOutcome=integratedResearchStatus(integrated.result?.report,integratedHorizon);
+  const [period,setPeriod]=useState('365');
   const [indicators,setIndicators]=useState<IndicatorSelection>(()=>{try{return JSON.parse(localStorage.getItem('a-share-indicators')||'null')||{MA20:true,MA60:true,volume:true};}catch{return {MA20:true,MA60:true,volume:true};}});
   const [saved,setSaved]=useState<{code:string;stock?:MarketStock;result?:PriceScenarioResult;error?:string}>({code:''});
-  const {history,error,retry,reload}=useMarketHistory(code,start,end,adjust);
-  const {history:raw,reload:reloadRaw}=useMarketHistory(code,start,end,'raw');
+  const {history,error,retry,reload}=useMarketHistory(code,HISTORY_START,marketToday,adjust);
+  const {history:raw,reload:reloadRaw}=useMarketHistory(code,HISTORY_START,marketToday,'raw');
   const [stockReload,setStockReload]=useState({code:'',revision:0});
   const reloadOutlook=outlook.reload,reloadIntegrated=integrated.reload;
+  const historyLoad=useRef<{code:string;version?:string;pending:boolean}|undefined>(undefined);
+  const historyState=history?.state;
+  const chartVersion=history&&['ready','partial'].includes(history.state)&&history.actual_end
+    ?[history.source,history.adjustment_basis,history.fetched_at,history.actual_end,history.currency].join('|'):undefined;
+  useEffect(()=>{
+    const previous=historyLoad.current?.code===code?historyLoad.current:undefined;
+    if(historyState==='pending'){
+      historyLoad.current={code,version:previous?.version,pending:true};
+      return;
+    }
+    if(!chartVersion)return;
+    historyLoad.current={code,version:chartVersion,pending:false};
+    if(previous&&(previous.pending||previous.version!==chartVersion)){
+      reloadOutlook();
+      reloadIntegrated();
+    }
+  },[code,historyState,chartVersion,reloadOutlook,reloadIntegrated]);
   const onLiveReady=useCallback(()=>{reload();reloadRaw();reloadOutlook();reloadIntegrated();onPriceRefresh?.(code);setStockReload(previous=>({code,revision:previous.revision+1}));},[code,reload,reloadRaw,reloadOutlook,reloadIntegrated,onPriceRefresh]);
   const live=useLivePrice(code,onLiveReady);
   useEffect(()=>{
@@ -68,7 +88,7 @@ export default function StockDetail({code,candidate,onWatchlist,research,events=
   const stock=saved.code===code?saved.stock:undefined,result=saved.code===code?saved.result:undefined;
   const liveQuote=live.result?.quote,stockTime=Date.parse(stock?.quote?.fetched_at||'');
   const quote=liveQuote&&(!stock?.quote||!Number.isFinite(stockTime)||Date.parse(liveQuote.fetched_at)>=stockTime)?liveQuote:stock?.quote;
-  const liveBar=useMemo(()=>provisionalPriceBar(live.result,history,adjust,end,code),[live.result,history,adjust,end,code]);
+  const liveBar=useMemo(()=>provisionalPriceBar(live.result,history,adjust,marketToday,code),[live.result,history,adjust,marketToday,code]);
   const ruleUnavailableReason=ruleOverlayReason(candidate,raw,history,code,today());
   const levels=useMemo(()=>{
     const output:ChartPriceLevel[]=[],ctx=result?.context;
@@ -94,14 +114,14 @@ export default function StockDetail({code,candidate,onWatchlist,research,events=
   const flowIndustry=stock?.industries?.find(s=>/^em:industry:BK\d{4}$/.test(s.sector_id));
   return <MarketContext.Provider value={{market,currency,financialCurrency:stock?.financial_currency||presentation.financialCurrency}}><section role="region" aria-label="股票研究详情" className="am-stock-detail"><header className="am-stock-header"><div><p className="as-eyebrow">{code} · {stock?.demo?'虚构样本':stock?.identity_verified?'证券身份已核实':'证券身份待核实'}</p><h2>{stock?.name||candidate?.name||code}</h2><p className="as-muted">{stock?.industries?.map(s=>s.name).join('、')||'行业待补齐'} · {stock?.concepts?.map(s=>s.name).join('、')||'概念待补齐'}</p></div><div><strong className="am-quote">{quote?.price==null?'—':`${currencyMark(currency)}${quote.price.toFixed(2)}`}</strong><p className="as-footnote">{live.state==='ready'&&live.result?.provisional===false?'收盘快照':'行情快照'} · {quote?.source_time||'行情源时间未知'}<br/>行情日 {quote?.trade_date||'未知'} · 获取 {quote?.fetched_at||'—'}</p><button className="am-button" onClick={()=>onWatchlist(code)}>加入 / 移出自选</button><button className="am-button am-live-button" disabled={live.loading} onClick={live.refresh}>刷新最新行情</button><p className="as-footnote am-live-status" role="status">{live.state==='pending'?'正在刷新最新行情…':live.loading?'正在读取最新行情缓存…':live.state==='failed'?'刷新失败，保留已获行情':live.result?.message||'尚无最新行情缓存'}<br/>最近获取 {live.result?.fetched_at||quote?.fetched_at||'未知'}</p>{live.error&&<p className="am-live-error" role="alert">{live.error}</p>}</div></header>
     <ResearchWorkspaceToolbar result={integrated.result} error={researchScope==='value'?value.error:[integrated.error,researchScope==='both'?value.error:undefined].filter(Boolean).join('；')} message={researchScope==='value'?undefined:integrated.message} busy={integrated.busy} loading={researchScope==='value'?value.loading:integrated.loading} horizon={integratedHorizon} onHorizon={setIntegratedHorizon} onPrepare={prepareSelected} onGenerate={generateSelected} scope={researchScope} onScope={setResearchScope} valueStatus={value.result?.status} valueProgress={value.result?.progress} valueBusy={value.busy} overlayMatched={!!(integratedLayer?.forecast||integratedLayer?.levels.length)}/>
-    <section className="am-chart-panel" aria-label="K线与指标"><div className="am-toolbar"><label>图形<select aria-label="图形" value={chartType} onChange={e=>setChartType(e.target.value as 'candle'|'line')}><option value="candle">蜡烛图</option><option value="line">收盘线</option></select></label><label>价格口径<select aria-label="价格口径" value={adjust} onChange={e=>setAdjust(e.target.value as Adjust)}><option value="qfq">{market==='cn'?'前复权':'供应商复权（含分红）'}</option><option value="raw">不复权</option></select></label><label>查看期间<select aria-label="查看期间" defaultValue="365" onChange={e=>{if(e.target.value!=='custom'){setStart(since(Number(e.target.value)));setEnd(today());}}}>{[[30,'1个月'],[90,'3个月'],[180,'6个月'],[365,'1年'],[1095,'3年'],['custom','自定义']].map(([v,n])=><option key={v} value={v}>{n}</option>)}</select></label><label>起始<input aria-label="起始日期" type="date" value={start} onChange={e=>setStart(e.target.value)}/></label><label>截止<input aria-label="截止日期" type="date" value={end} onChange={e=>setEnd(e.target.value)}/></label><button className="am-button" onClick={retry}>重试 / 更新历史</button></div>
+    <section className="am-chart-panel" aria-label="K线与指标"><div className="am-toolbar"><label>图形<select aria-label="图形" value={chartType} onChange={e=>setChartType(e.target.value as 'candle'|'line')}><option value="candle">蜡烛图</option><option value="line">收盘线</option></select></label><label>价格口径<select aria-label="价格口径" value={adjust} onChange={e=>setAdjust(e.target.value as Adjust)}><option value="qfq">{market==='cn'?'前复权':'供应商复权（含分红）'}</option><option value="raw">不复权</option></select></label><label>查看期间<select aria-label="查看期间" value={period} onChange={e=>{const value=e.target.value;setPeriod(value);if(value!=='custom'){setStart(value==='all'?HISTORY_START:since(Number(value)));setEnd(today());}}}>{[[7,'1周'],[30,'1个月'],[90,'3个月'],[180,'6个月'],[365,'1年'],[1095,'3年'],[1826,'5年'],['all','全部历史'],['custom','自定义']].map(([v,n])=><option key={v} value={v}>{n}</option>)}</select></label><label>起始<input aria-label="起始日期" type="date" value={start} onChange={e=>{setPeriod('custom');setStart(e.target.value);}}/></label><label>截止<input aria-label="截止日期" type="date" value={end} onChange={e=>{setPeriod('custom');setEnd(e.target.value);}}/></label><button className="am-button" onClick={retry}>重试 / 更新历史</button></div>
       <IndicatorControls value={indicators} onChange={v=>{setIndicators(v);try{localStorage.setItem('a-share-indicators',JSON.stringify(v));}catch{/* private browsing */}}}/><div className="am-layer-controls"><label><input type="checkbox" checked={showRule} onChange={e=>setShowRule(e.target.checked)}/>规则价位</label><label><input type="checkbox" checked={showReport} onChange={e=>setShowReport(e.target.checked)}/>首页历史策略线（虚线）</label><label><input type="checkbox" checked={showAI} onChange={e=>setShowAI(e.target.checked)}/>AI价位与预测区间</label><label><input type="checkbox" checked={showQuantPlan} onChange={e=>setShowQuantPlan(e.target.checked)}/>数值观察价位</label></div>
       <div className="am-layer-controls"><label><input type="checkbox" checked={showIntegrated} onChange={e=>setShowIntegrated(e.target.checked)}/>综合情景与策略线（未校准）</label></div>
       <label className="am-value-overlay"><input type="checkbox" checked={showValue} onChange={e=>setShowValue(e.target.checked)}/>长期保守价值与条件安全价（估值参考）</label>{showValue&&valueLayer.reason&&<p className="as-footnote">{valueLayer.reason}</p>}
       {(error||(saved.code===code&&saved.error))&&<p role="alert">{error||saved.error}</p>}
       {!history&&<p className="as-footnote">正在查询历史缓存…</p>}
       {!integrated.busy&&!['preparing','running'].includes(integrated.result?.status||'')&&integratedOutcome.missingReason&&<p className="am-integrated-warning" role="status">当前{integratedHorizon}交易日情景：{integratedOutcome.missingReason}{showIntegrated&&integratedLayer?.forecast&&' 较早期限的已发布节点仍保留，不延长到缺失期限。'}</p>}
-      {history&&<><p className="as-footnote">{history.source||'来源待确认'} · {adjust==='qfq'?(market==='cn'?'前复权':'供应商复权（含分红）'):'不复权'} · {history.state==='pending'?'补齐中':history.state==='partial'?'部分覆盖':history.state==='failed'?'获取失败':'缓存历史'} · 实际 {history.actual_start||'—'} 至 {history.actual_end||'—'}<br/>获取 {history.fetched_at||'—'} · 基准 {history.adjustment_basis||'—'}</p><PriceChart items={history.items||[]} warmup={history.warmup_items} chartType={chartType} indicators={indicators} levels={chartLevels} highlight={highlight} onHighlight={setHighlight} forecast={showFan?numericalFan:undefined} events={numericalFan?outlook.result?.events:undefined} live={liveBar} integrated={showIntegrated?integratedLayer?.forecast:undefined}/>{live.result?.state==='ready'&&live.result.provisional&&!liveBar&&<p className="as-footnote">临时行情的日期、来源或复权基准与当前期间不匹配，未叠加到图表。</p>}{history.limitations?.map(s=><p className="as-footnote" key={s}>{s}</p>)}</>}
+      {history&&<><p className="as-footnote">{history.source||'来源待确认'} · {adjust==='qfq'?(market==='cn'?'前复权':'供应商复权（含分红）'):'不复权'} · {history.state==='pending'?'补齐中':history.state==='partial'?'部分覆盖':history.state==='failed'?'获取失败':'缓存历史'} · 可回看历史 {history.actual_start||'—'} 至 {history.actual_end||'—'}<br/>获取 {history.fetched_at||'—'} · 基准 {history.adjustment_basis||'—'}</p><PriceChart key={code+'|'+start+'|'+end+'|'+period} range={{start,end}} items={history.items||[]} warmup={history.warmup_items} chartType={chartType} indicators={indicators} levels={chartLevels} highlight={highlight} onHighlight={setHighlight} forecast={showFan?numericalFan:undefined} events={numericalFan?outlook.result?.events:undefined} live={liveBar} integrated={showIntegrated?integratedLayer?.forecast:undefined}/>{live.result?.state==='ready'&&live.result.provisional&&!liveBar&&<p className="as-footnote">临时行情的日期、来源或复权基准与当前期间不匹配，未叠加到图表。</p>}{history.limitations?.map(s=><p className="as-footnote" key={s}>{s}</p>)}</>}
     </section>
     {market==='cn'&&flowIndustry&&<IndustryFlowSummary sector={flowIndustry}/>}
     {market!=='cn'&&<ListingBindingEditor code={code} onSaved={value.reload}/>}

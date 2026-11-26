@@ -34,7 +34,7 @@ _MAX_FEED_BYTES = 2 * 1024 * 1024
 _MAX_FEED_REDIRECTS = 5
 _UPSTREAM_FETCH_FAILURE_MESSAGE = "fetch failed: upstream request failed"
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
-_DISABLE_REQUEST_PROXIES = {"http": None, "https": None}
+_DISABLE_REQUEST_PROXIES = {"http": None, "https": None, "all": None}
 _DNS_GUARD_LOCK = threading.Lock()
 _AUTO_FETCH_MIN_INTERVAL_SECONDS = 60 * 60
 _BUILTIN_SOURCE_TEMPLATES = [
@@ -568,7 +568,8 @@ class IntelligenceService:
             socket.getaddrinfo = guarded_getaddrinfo
             try:
                 request_kwargs = dict(kwargs)
-                request_kwargs.setdefault("proxies", _DISABLE_REQUEST_PROXIES)
+                # Requests merges environment proxies into the supplied mapping in place.
+                request_kwargs.setdefault("proxies", _DISABLE_REQUEST_PROXIES.copy())
                 return requests.get(raw_url, **request_kwargs)
             finally:
                 socket.getaddrinfo = original_getaddrinfo

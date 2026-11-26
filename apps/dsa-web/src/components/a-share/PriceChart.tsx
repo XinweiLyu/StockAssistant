@@ -5,12 +5,18 @@ import { computeIndicators } from './priceChartData';
 const COLORS=['#e3ac57','#a8c9fa','#b996ec','#70bcb7','#d5b27b','#92a8bc'];
 const MA_KEYS=['MA5','MA10','MA20','MA60','MA120','MA250'] as const;
 const SCENARIOS={bear:{label:'偏弱',color:'#70bcb7'},base:{label:'基准',color:'#b996ec'},bull:{label:'偏强',color:'#e77986'}};
-export default function PriceChart({items,warmup,chartType,indicators,levels,highlight,onHighlight,forecast,events=[],live,integrated}:{items:MarketBar[];warmup?:MarketBar[];chartType:'candle'|'line';indicators:IndicatorSelection;levels:ChartPriceLevel[];highlight?:string;onHighlight?:(id:string)=>void;forecast?:ChartForecast;events?:ChartEvent[];live?:ChartLiveBar;integrated?:ChartIntegratedForecast}){
+export default function PriceChart({items,warmup,chartType,indicators,levels,highlight,onHighlight,forecast,events=[],live,integrated,range}:{items:MarketBar[];warmup?:MarketBar[];chartType:'candle'|'line';indicators:IndicatorSelection;levels:ChartPriceLevel[];highlight?:string;onHighlight?:(id:string)=>void;forecast?:ChartForecast;events?:ChartEvent[];live?:ChartLiveBar;integrated?:ChartIntegratedForecast;range?:{start:string;end:string}}){
   const {currency}=useMarketPresentation();
   const data=useMemo(()=>computeIndicators(items,warmup),[items,warmup]);
-  const [count,setCount]=useState(120),[offset,setOffset]=useState(0),[hover,setHover]=useState<number|null>(null),[includeFar,setIncludeFar]=useState(false);
+  const [count,setCount]=useState<number>(),[offset,setOffset]=useState<number>(),[hover,setHover]=useState<number|null>(null),[includeFar,setIncludeFar]=useState(false);
   if(!items.length)return <div className="as-empty">暂无有效历史价格。补齐数据后显示真实开、高、低、收。</div>;
-  const end=Math.max(1,items.length-Math.min(offset,items.length-1)),start=Math.max(0,end-count),visible=items.slice(start,end);
+  const firstAfterRange = range?.end ? items.findIndex(bar => bar.date > range.end) : -1;
+  const rangeEnd = firstAfterRange < 0 ? items.length : Math.max(1, firstAfterRange);
+  const firstInRange = range?.start ? items.findIndex(bar => bar.date >= range.start) : 0;
+  const rangeCount = range ? Math.max(1, rangeEnd - (firstInRange < 0 ? rangeEnd - 1 : firstInRange)) : 120;
+  const windowCount = Math.min(count ?? rangeCount, items.length);
+  const windowOffset = Math.min(offset ?? items.length - rangeEnd, items.length - 1);
+  const end=items.length-windowOffset,start=Math.max(0,end-windowCount),visible=items.slice(start,end);
   const provisional=live&&end===items.length&&live.bar.date>(items.at(-1)?.date||'')?live:undefined;
   const displayLength=visible.length+(provisional?1:0);
   const hoverIndex=Math.max(0,Math.min(hover??displayLength-1,displayLength-1));
@@ -111,7 +117,7 @@ export default function PriceChart({items,warmup,chartType,indicators,levels,hig
       {scenario.missing_nodes&&scenario.missing_nodes.length>0&&<p className="as-footnote">缺失节点：{scenario.missing_nodes.map(n=>`${n.sessions}日${SCENARIOS[n.scenario].label}`).join('、')}；不补值，不将已结束的情景延长到缺失期限。</p>}</>}
     {reportLevels.length>0&&<p className="as-footnote">青色虚线是首页历史报告参考价，按当前图表口径映射；原始建议价见上方报告，不随行情自动重算。</p>}
     {far&&<label className="am-checkbox"><input aria-label="包含远端价位" type="checkbox" checked={includeFar} onChange={e=>setIncludeFar(e.target.checked)}/>包含远端价位（扩大价格轴）</label>}
-    <div className="am-zoom"><label>可见交易日数量<input aria-label="可见交易日数量" type="range" min={1} max={items.length} value={Math.min(count,items.length)} onChange={e=>setCount(Number(e.target.value))}/></label><label>向前查看<input aria-label="历史窗口位置" type="range" min={0} max={Math.max(0,items.length-1)} value={Math.min(offset,items.length-1)} onChange={e=>setOffset(Number(e.target.value))}/></label></div>
+    <div className="am-zoom"><label>可见交易日数量<input aria-label="可见交易日数量" type="range" min={1} max={items.length} value={windowCount} onChange={e=>{setCount(Number(e.target.value));setHover(null);}}/></label><label>向前查看<input aria-label="历史窗口位置" type="range" min={0} max={items.length-1} value={windowOffset} onChange={e=>{setOffset(Number(e.target.value));setHover(null);}}/></label>{windowOffset>0&&<button className="am-button" onClick={()=>{setOffset(0);setHover(null);}}>回到最新</button>}</div>
     {levels.some(l=>l.active&&l.anchor_date&&!visible.some(b=>b.date===l.anchor_date))&&<p className="as-footnote">当前窗口不含研究锚点，切回最近期间查看价位叠加。</p>}
   </div>;
 }

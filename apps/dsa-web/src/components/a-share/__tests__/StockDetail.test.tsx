@@ -4,7 +4,7 @@ import StockDetail from '../StockDetail';
 import { aShareMarketApi } from '../../../api/aShareMarket';
 import { historyApi } from '../../../api/history';
 import { strategyPrice } from '../savedAnalysis';
-import { outlookFixture } from './outlookFixture';
+import { outlookFixture,outlookHistory } from './outlookFixture';
 import { unavailableLive } from './liveFixture';
 import { integratedFixture,integratedHistory } from './integratedFixture';
 import type { Candidate } from '../../../types/aShare';
@@ -12,6 +12,32 @@ vi.mock('../../../api/aShareMarket',()=>({aShareMarketApi:{getValue:vi.fn(async(
 vi.mock('../../../api/history',()=>({historyApi:{getList:vi.fn(),getDetail:vi.fn()}}));
 const page=(code:string,close:number)=>({code,state:'ready',items:[{date:'2026-10-09',open:close,high:close+1,low:close-1,close}],source:'fixture',adjust:'qfq' as const,adjustment_basis:'b1',requested_start:'2026-01-01',requested_end:'2026-10-09',actual_end:'2026-10-09',limitations:[]});
 beforeEach(()=>{vi.resetAllMocks();vi.mocked(aShareMarketApi.integrated).mockImplementation(async code=>({code,status:"missing",bundle:null,report:null,demo:false,progress:null,task:null,message:"尚无综合研究"}));vi.mocked(aShareMarketApi.live).mockImplementation(async code=>unavailableLive(code));vi.mocked(aShareMarketApi.outlook).mockResolvedValue({...outlookFixture(),status:'insufficient',forecasts:[]});vi.mocked(aShareMarketApi.stock).mockImplementation(async code=>({code,name:code,industries:[],concepts:[],source:'fixture',quote:null}));vi.mocked(aShareMarketApi.scenarios).mockResolvedValue({status:'insufficient',trade_levels:null,forecasts:[]});vi.mocked(historyApi.getList).mockResolvedValue({items:[],total:0,page:1,limit:1});});
+it('keeps forecast on the latest short view while the sliders reach listing history',async()=>{
+  const code='600000', latest='2026-10-09';
+  vi.useFakeTimers({toFake:['Date']});
+  vi.setSystemTime(new Date('2026-10-09T12:00:00Z'));
+  const dates=['2018-07-26','2026-01-01','2026-09-10','2026-09-28',latest];
+  vi.mocked(aShareMarketApi.history).mockImplementation(async(_code,_start,_end,adjust)=>{
+    const fixture=outlookHistory(adjust,code);
+    return {...fixture,items:dates.map(date=>({...fixture.items[0],date}))};
+  });
+  vi.mocked(aShareMarketApi.outlook).mockResolvedValue(outlookFixture());
+  const {container}=render(<StockDetail code={code} onResearch={()=>{}} onWatchlist={()=>{}}/>);
+  await waitFor(()=>expect(container.querySelector('[data-outlook-code]')).toBeInTheDocument());
+  const requestCount=vi.mocked(aShareMarketApi.history).mock.calls.length;
+  fireEvent.change(screen.getByLabelText('查看期间'),{target:{value:'30'}});
+  expect(container.querySelector('[data-outlook-code]')).toBeInTheDocument();
+  expect(aShareMarketApi.history).toHaveBeenCalledTimes(requestCount);
+  expect(aShareMarketApi.history).toHaveBeenCalledWith(code,'1900-01-01',expect.any(String),'qfq',expect.any(AbortSignal),false);
+  const slider=screen.getByLabelText('历史窗口位置');
+  expect(slider).toHaveAttribute('max','4');
+  fireEvent.change(slider,{target:{value:'4'}});
+  expect(screen.getByLabelText(/2018-07-26 开/)).toBeInTheDocument();
+  expect(container.querySelector('[data-outlook-code]')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button',{name:'回到最新'}));
+  expect(container.querySelector('[data-outlook-code]')).toBeInTheDocument();
+  vi.useRealTimers();
+});
 it('shows the latest saved homepage decision and its four prices without generating new AI analysis',async()=>{
   vi.mocked(aShareMarketApi.history).mockImplementation(async(code,_start,_end,adjust)=>({...page(code,25),adjust}));
   vi.mocked(historyApi.getList).mockResolvedValue({items:[{id:7,queryId:'q7',stockCode:'000807.SZ',stockName:'云铝股份',createdAt:'2026-10-12T14:16:00+08:00'}],total:1,page:1,limit:1});
@@ -200,10 +226,10 @@ describe('rule price history binding',()=>{
   });
 
   it('does not move an old plan to a newer complete day or a manually selected historical end date',async()=>{
-    vi.mocked(aShareMarketApi.history).mockImplementation(async(code,_start,end,adjust)=>({
-      ...page(code,adjust==='raw'?25:20),adjust,actual_end:end==='2026-10-08'?'2026-10-08':'2026-10-12',
-      items:[{...page(code,adjust==='raw'?25:20).items[0],date:end==='2026-10-08'?'2026-10-08':'2026-10-12'}],
-    }));
+    vi.mocked(aShareMarketApi.history).mockImplementation(async(code,_start,_end,adjust)=>{
+      const fixture=page(code,adjust==='raw'?25:20);
+      return {...fixture,adjust,actual_end:'2026-10-12',items:['2026-10-08','2026-10-12'].map(date=>({...fixture.items[0],date}))};
+    });
     const {container}=render(<StockDetail code="600000" candidate={currentCandidate()} onResearch={()=>{}} onWatchlist={()=>{}}/>);
     await screen.findByText(/2026-10-12 · 开 20/);
     expect(container.querySelector('[data-level-id^="rule-"]')).not.toBeInTheDocument();

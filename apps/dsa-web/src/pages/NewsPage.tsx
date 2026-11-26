@@ -22,7 +22,10 @@ export default function NewsPage() {
     try { await fn(); feed.reload(); } catch (error) { setActionError(toApiErrorMessage(error)); }
     finally { setActing(false); }
   };
-  const sourceRows = feed.sources.filter(row => row.market === market || row.market === 'global');
+  const sourceRows = feed.sources.filter(row => (
+    (row.market === market || (view !== 'watchlist' && row.market === 'global'))
+    && (view !== 'hot' || row.source_type === 'newsnow')
+  ));
   return <AppPage className="space-y-6">
     <header className="flex flex-wrap items-start justify-between gap-4 border-b border-border pb-5">
       <div><p className="mb-2 text-xs tracking-widest text-cyan">MARKET INTELLIGENCE</p><h1 className="flex items-center gap-2 text-2xl font-semibold"><Newspaper size={24} />热点资讯</h1><p className="mt-2 text-sm text-secondary-text">浏览市场关注、新闻和明确关联自选的资讯。页面可见时每5分钟检查，不自动调用AI。</p></div>
@@ -51,7 +54,13 @@ export default function NewsPage() {
     </div>
     <section aria-label="资讯列表" className="divide-y divide-border rounded-2xl border border-border bg-card/50">
       {feed.loading && !feed.items.length && <p role="status" className="p-6 text-secondary-text">正在读取资讯…</p>}
-      {!feed.loading && !feed.items.length && <div className="p-8 text-secondary-text">{feed.emptyWatchlist ? '当前市场暂无自选股票，可先到交易助手添加。' : feed.sources.some(row => row.enabled) ? '此筛选暂无已采集资讯；可能是来源覆盖不足、尚未采集或采集失败，请查看来源状态。' : '没有启用的来源，请在下方添加免费来源或启用已有来源。'}</div>}
+      {!feed.loading && !feed.items.length && (
+        <div className="p-8 text-secondary-text">
+          {feed.emptyWatchlist ? '当前市场暂无自选股票，可先到交易助手添加。'
+            : sourceRows.some(row => row.enabled) ? '此筛选暂无已采集资讯。可查看来源状态，或调整采集范围。'
+              : '当前市场和视图暂无启用的来源。可切换视图，或在下方查看来源状态。'}
+        </div>
+      )}
       {feed.items.map(item => {
         const url = safeNewsUrl(item.url), stock = newsStockLink(item);
         return <article key={item.id} className="space-y-3 p-5">

@@ -194,6 +194,7 @@ export const DecisionSignalTimeline: React.FC<DecisionSignalTimelineProps> = ({
 }) => {
   const { language, t } = useUiLanguage();
   const data = buildTimelineData(items);
+  const actions = buildDecisionActionLabelMap(t);
   const selectedDatum = selectedId === null ? null : data.find((datum) => datum.item.id === selectedId);
   const selectedIndex = selectedDatum?.index ?? null;
 
@@ -225,6 +226,26 @@ export const DecisionSignalTimeline: React.FC<DecisionSignalTimelineProps> = ({
           message={t('decisionSignals.timelineTruncatedDescription')}
         />
       ) : null}
+      <ul aria-label={t('decisionSignals.timelineRecords')} className="max-h-48 divide-y divide-border/70 overflow-y-auto rounded-lg border border-border/70">
+        {items.map((item) => (
+          <li key={item.id}>
+            <button
+              type="button"
+              onClick={() => onSelect(item)}
+              aria-pressed={item.id === selectedId}
+              className="flex w-full flex-wrap items-center justify-between gap-x-4 gap-y-1 px-3 py-2.5 text-left hover:bg-elevated/50"
+            >
+              <span className="font-medium text-foreground">
+                {getDecisionActionLabel(item.action, item.actionLabel, null, t('decisionSignals.action'), actions)} · {t(STATUS_LABEL_KEYS[item.status])}
+              </span>
+              <span className="flex items-center gap-3 text-xs text-secondary-text">
+                {formatDateTime(item.createdAt, language)}
+                <span className="font-medium text-primary">{t('decisionSignals.timelineViewDetails')}</span>
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
       <div className="h-[320px] min-h-[320px] w-full">
         <ResponsiveContainer width="100%" height="100%">
           <ScatterChart margin={{ top: 18, right: 18, bottom: 20, left: 4 }}>

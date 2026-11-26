@@ -57,6 +57,59 @@ def test_one_paired_job_populates_both_bases_and_reuses_cache(workspace):
     assert workspace.provider.calls==1
 
 
+def test_stock_history_accepts_a_listing_lifetime_request(workspace):
+    start, end = '1900-01-01', '2026-11-13'
+    raw = workspace.history('AAPL', start, end, 'raw')
+    assert raw.state == 'pending'
+    while workspace.jobs.run_one():
+        pass
+    adjusted = workspace.history('AAPL', start, end, 'qfq')
+    assert adjusted.state == 'ready'
+    assert adjusted.actual_start == '2026-11-13'
+    assert adjusted.requested_start == start
+
+
+def test_history_refresh_keeps_cached_pair_and_reuses_pending_work(workspace):
+    start, end = '2026-11-12', '2026-11-13'
+    workspace.history('AAPL', start, end, 'raw')
+    while workspace.jobs.run_one():
+        pass
+    assert workspace.history('AAPL', start, end, 'qfq').state == 'ready'
+
+    refreshing = workspace.history('AAPL', start, end, 'qfq', refresh=True)
+    duplicate = workspace.history('AAPL', start, end, 'raw', refresh=True)
+    polled = workspace.history('AAPL', start, end, 'qfq')
+    assert refreshing.state == duplicate.state == polled.state == 'pending'
+    assert refreshing.task_id == duplicate.task_id == polled.task_id
+    assert refreshing.items[0].close == 52.5
+    assert duplicate.items[0].close == 105.
+
+    while workspace.jobs.run_one():
+        pass
+    assert workspace.history('AAPL', start, end, 'qfq').state == 'ready'
+    assert workspace.provider.calls == 2
+
+
+def test_history_respects_retry_backoff_after_provider_rate_limit(workspace, monkeypatch):
+    from yfinance.exceptions import YFRateLimitError
+
+    def rate_limited(*args):
+        raise YFRateLimitError()
+
+    monkeypatch.setattr(workspace.provider, 'history', rate_limited)
+    start, end = '2026-11-12', '2026-11-13'
+    initial = workspace.history('AAPL', start, end, 'qfq')
+    while workspace.jobs.run_one():
+        pass
+
+    retry = workspace.history('AAPL', start, end, 'qfq', refresh=True)
+    assert retry.state == 'pending'
+    assert retry.task_id == initial.task_id
+    assert not retry.items
+    assert any('Yahoo 暂时限制行情请求' in line for line in retry.limitations)
+    assert not workspace.jobs.run_one()
+
+
 def test_manual_refresh_schedules_only_market_data(workspace):
     workspace.catalog(CatalogQuery())
     result=workspace.refresh_price('AAPL')
@@ -66,6 +119,29 @@ def test_manual_refresh_schedules_only_market_data(workspace):
     assert live['quote']['price']==105.
     assert not workspace.assistant.repo.records('free','value_review')
     assert not workspace.assistant.repo.records('free','integrated_report')
+
+
+def test_verified_quote_currency_reaches_forecast_and_chart_without_identity(workspace, monkeypatch):
+    from src.services.a_share_outlook_service import OutlookService
+
+    def no_profile(identity):
+        raise ValueError('Provider profile unavailable')
+
+    monkeypatch.setattr(workspace.provider, 'identity', no_profile)
+    stock = workspace.stock('AAPL')
+    assert stock['currency'] is None
+    workspace.refresh_price('AAPL')
+    while workspace.jobs.run_one():
+        pass
+
+    stock = workspace.stock('AAPL')
+    assert not stock['identity_verified']
+    assert stock['financial_currency'] is None
+    assert stock['quote']['currency'] == stock['currency'] == 'USD'
+    for adjust in ('raw', 'qfq'):
+        pane = workspace.history('AAPL', '2026-11-12', '2026-11-13', adjust)
+        assert pane.currency == 'USD'
+    assert OutlookService(workspace.assistant).get('us:AAPL')['currency'] == 'USD'
 
 
 def test_yahoo_raw_adjusted_pair_is_not_auto_adjusted():

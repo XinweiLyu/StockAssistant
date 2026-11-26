@@ -13,7 +13,7 @@ import { useStockIndex } from '../../hooks/useStockIndex';
 import { useAutocomplete } from '../../hooks/useAutocomplete';
 import { SuggestionsList } from './SuggestionsList';
 import { cn } from '../../utils/cn';
-import type { Market } from '../../types/stockIndex';
+import type { Market, StockSuggestion } from '../../types/stockIndex';
 
 const AUTOCOMPLETE_INPUT_CLASS =
   'input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-4 text-sm transition-all focus:outline-none disabled:cursor-not-allowed disabled:opacity-60';
@@ -36,8 +36,12 @@ export interface StockAutocompleteProps {
   placeholder?: string;
   /** Accessible label */
   ariaLabel?: string;
+  ariaInvalid?: boolean;
+  ariaDescribedBy?: string;
   /** Additional CSS class name */
   className?: string;
+  /** Keep the suggestions in the layout so they cannot cover adjacent controls. */
+  inlineSuggestions?: boolean;
 }
 
 function FallbackInput({
@@ -47,6 +51,8 @@ function FallbackInput({
   disabled = false,
   placeholder = '输入股票代码或名称',
   ariaLabel,
+  ariaInvalid,
+  ariaDescribedBy,
   className,
 }: StockAutocompleteProps) {
   return (
@@ -62,6 +68,8 @@ function FallbackInput({
       }}
       placeholder={placeholder}
       aria-label={ariaLabel}
+      aria-invalid={ariaInvalid}
+      aria-describedby={ariaDescribedBy}
       disabled={disabled}
       className={cn(AUTOCOMPLETE_INPUT_CLASS, className)}
       data-autocomplete-mode="fallback"
@@ -109,7 +117,10 @@ function StockAutocompleteInner({
   disabled = false,
   placeholder = '输入股票代码或名称',
   ariaLabel,
+  ariaInvalid,
+  ariaDescribedBy,
   className,
+  inlineSuggestions = false,
 }: StockAutocompleteProps) {
   const { index, loading, fallback } = useStockIndex();
   const {
@@ -121,6 +132,7 @@ function StockAutocompleteInner({
     setHighlightedIndex,
     highlightPrevious,
     highlightNext,
+    handleSelect,
     close,
     // reset,
     isComposing,
@@ -130,6 +142,7 @@ function StockAutocompleteInner({
   } = useAutocomplete(index);
 
   const inputRef = useRef<HTMLInputElement>(null);
+  const blurTimeout = useRef<number | undefined>(undefined);
   const prevValueRef = useRef(value);
   const [dropdownStyle, setDropdownStyle] = useState<{ top: number; left: number; width: string } | null>(null);
 
@@ -152,6 +165,8 @@ function StockAutocompleteInner({
     setDropdownStyle(null);
   };
 
+  useEffect(() => () => window.clearTimeout(blurTimeout.current), []);
+
   // Sync external value with internal query (only when value truly changes)
   useEffect(() => {
     if (prevValueRef.current !== value) {
@@ -162,7 +177,7 @@ function StockAutocompleteInner({
 
   // Calculate suggestion box position (using fixed positioning)
   useEffect(() => {
-    if (!isOpen) {
+    if (!isOpen || inlineSuggestions) {
       return;
     }
 
@@ -175,7 +190,7 @@ function StockAutocompleteInner({
       window.removeEventListener('resize', updateDropdownPosition);
       window.removeEventListener('scroll', updateDropdownPosition, true);
     };
-  }, [isOpen]);
+  }, [inlineSuggestions, isOpen]);
 
   useEffect(() => {
     if (!autocompleteError) {
@@ -184,6 +199,17 @@ function StockAutocompleteInner({
 
     console.error('Autocomplete runtime fallback activated.', autocompleteError);
   }, [autocompleteError]);
+
+  const selectSuggestion = (suggestion: StockSuggestion) => {
+    prevValueRef.current = suggestion.displayCode;
+    handleSelect(suggestion);
+    setDropdownStyle(null);
+    onChange(suggestion.displayCode);
+    onSubmit(suggestion.canonicalCode, suggestion.nameZh, 'autocomplete', {
+      market: suggestion.market,
+      displayCode: suggestion.displayCode,
+    });
+  };
 
   // Keyboard event handling
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -202,14 +228,7 @@ function StockAutocompleteInner({
       case 'Enter':
         e.preventDefault();
         if (highlightedIndex >= 0 && suggestions[highlightedIndex]) {
-          // Select highlighted item
-          const selected = suggestions[highlightedIndex];
-          onChange(selected.displayCode);
-          closeSuggestions();
-          onSubmit(selected.canonicalCode, selected.nameZh, 'autocomplete', {
-            market: selected.market,
-            displayCode: selected.displayCode,
-          });
+          selectSuggestion(suggestions[highlightedIndex]);
         } else {
           // Submit directly
           onSubmit(value);
@@ -231,9 +250,10 @@ function StockAutocompleteInner({
     setIsComposing(false);
   };
 
-  // Delay closing on blur (avoid immediate close when clicking suggestion items)
   const handleBlur = () => {
-    setTimeout(() => closeSuggestions(), 200);
+    // Give adjacent controls time to receive the click before the inline layout changes.
+    window.clearTimeout(blurTimeout.current);
+    blurTimeout.current = window.setTimeout(closeSuggestions, 200);
   };
 
   // Fallback mode: use normal input
@@ -246,10 +266,22 @@ function StockAutocompleteInner({
         disabled={disabled}
         placeholder={placeholder}
         ariaLabel={ariaLabel}
+        ariaInvalid={ariaInvalid}
+        ariaDescribedBy={ariaDescribedBy}
         className={className}
       />
     );
   }
+
+  const suggestionList = isOpen ? (
+    <SuggestionsList
+      suggestions={suggestions}
+      highlightedIndex={highlightedIndex}
+      onSelect={selectSuggestion}
+      onMouseEnter={setHighlightedIndex}
+      style={inlineSuggestions ? undefined : { position: 'fixed', ...dropdownStyle }}
+    />
+  ) : null;
 
   return (
     <div className="relative stock-autocomplete">
@@ -262,13 +294,16 @@ function StockAutocompleteInner({
         onCompositionStart={handleCompositionStart}
         onCompositionEnd={handleCompositionEnd}
         onFocus={() => {
-          if (isOpen) {
+          window.clearTimeout(blurTimeout.current);
+          if (isOpen && !inlineSuggestions) {
             updateDropdownPosition();
           }
         }}
         onBlur={handleBlur}
         placeholder={placeholder}
         aria-label={ariaLabel}
+        aria-invalid={ariaInvalid}
+        aria-describedby={ariaDescribedBy}
         disabled={disabled}
         className={cn(
           AUTOCOMPLETE_INPUT_CLASS,
@@ -289,27 +324,7 @@ function StockAutocompleteInner({
         </div>
       )}
 
-      {/* Suggestion dropdown list */}
-      {isOpen && dropdownStyle && createPortal(
-        <SuggestionsList
-          suggestions={suggestions}
-          highlightedIndex={highlightedIndex}
-          onSelect={(s) => {
-            // Update external value (shown in input box)
-            onChange(s.displayCode);
-            // Close dropdown list
-            closeSuggestions();
-            // Submit analysis
-            onSubmit(s.canonicalCode, s.nameZh, 'autocomplete', {
-              market: s.market,
-              displayCode: s.displayCode,
-            });
-          }}
-          onMouseEnter={(index) => setHighlightedIndex(index)}
-          style={{ position: 'fixed', ...dropdownStyle }}
-        />,
-        document.body
-      )}
+      {inlineSuggestions ? suggestionList : dropdownStyle && suggestionList && createPortal(suggestionList, document.body)}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 """Cached offshore workspace, using the existing market queue and typed history."""
 from datetime import datetime,date,timedelta,timezone
 from contextlib import contextmanager
+import re
 from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 import threading
@@ -136,7 +137,13 @@ class MarketWorkspaceService:
             task=self._enqueue('workspace_identity','identity:'+key,code=key)
             self.repo.set_state(self.profile,'identity-task:'+key,dict(id=task))
         groups=self.repo.associations(self.profile,[key]).get(key,[])
-        return stock|dict(quote=self.repo.quotes(self.profile,[key]).get(key),industries=[s for s in groups if s['kind']=='industry'],concepts=[],demo=False)
+        quote=self.repo.quotes(self.profile,[key]).get(key)
+        currency=stock.get('currency')
+        quote_currency=(quote or {}).get('currency')
+        # The same listing's quote supplies price units when the profile is unavailable.
+        if not currency and isinstance(quote_currency,str) and re.fullmatch(r'[A-Z]{3}',quote_currency):
+            currency=quote_currency
+        return stock|dict(currency=currency,quote=quote,industries=[s for s in groups if s['kind']=='industry'],concepts=[],demo=False)
 
     def _upsert_stock(self,stock):
         values=MarketStock.model_validate(stock).model_dump()
@@ -144,27 +151,45 @@ class MarketWorkspaceService:
             self.repo.base._upsert(conn,CATALOG,dict(profile=self.repo.physical(self.profile),code=values['code'],name=values['name'],board=values['board'],st=values['st'],payload=encode(values)))
 
     def history(self,code,start,end,adjust='qfq',refresh=False):
-        start,end=history_dates(start,end)
+        start,end=history_dates(start,end,stock_history=True)
         stock=self.stock(code);code=stock['code'];end=min(end,self.completed_day())
         if start>end:raise ValueError('所选区间尚无完整交易日')
         if adjust not in ('raw','qfq'):raise ValueError('价格口径不支持')
-        cached=self.repo.get_history(self.profile,'stock:'+code,adjust,start,end)
-        covers=bool(cached and cached['requested_start']<=start and cached['requested_end']>=end)
-        key='pair:'+code+':'+start+':'+end
-        pointer=self.repo.get_state(self.profile,key,{})
-        task=self.repo.task(pointer.get('id')) if pointer.get('id') else None
-        if refresh or (not covers and task is None):
-            task_id=self._enqueue('workspace_history',key+(':'+self.clock().isoformat() if refresh else ''),code=code,start=start,end=end)
-            self.repo.set_state(self.profile,key,dict(id=task_id));task=self.repo.task(task_id)
-        state='ready' if covers else 'failed' if task and task['state']=='failed' else 'pending'
-        items=(cached or {}).get('items',[])
-        if state=='ready' and (not items or items[-1]['date']!=end):state='partial'
+        key = 'pair:' + code + ':' + start + ':' + end
+        # Serialize request registration with publication of the paired history.
+        with self.assistant._settings_lock:
+            profile = self.profile
+            pointer = self.repo.get_state(profile, key, {})
+            task = self.repo.task(pointer['id']) if pointer.get('id') else None
+            cached = self.repo.get_history(profile, 'stock:' + code, adjust, start, end)
+            covers = bool(cached and cached['requested_start'] <= start and cached['requested_end'] >= end)
+            active = task and task['state'] in ('pending', 'running')
+            if not active and (refresh or (not covers and task is None)):
+                job_key = key + ':' + self.clock().isoformat() if refresh else key
+                task_id = self._enqueue('workspace_history', job_key, code=code, start=start, end=end)
+                self.repo.set_state(profile, key, dict(id=task_id))
+                task = self.repo.task(task_id)
+
+        items = (cached or {}).get('items', [])
+        if task and task['state'] in ('pending', 'running'):
+            state = 'pending'
+        elif task and task['state'] == 'failed':
+            state = 'failed'
+        elif covers and items and items[-1]['date'] == end:
+            state = 'ready'
+        else:
+            state = 'partial'
         limits=['历史只包含已完成日线；Yahoo复权为供应商总回报口径，非A股前复权','免费行情可能延迟，报价获取时间不等于源发布时间']
-        if task and task.get('error'):limits.append(task['error'])
+        if task and task.get('error'):
+            if task['error'].endswith('：YFRateLimitError'):
+                limits.append('Yahoo 暂时限制行情请求，系统将按计划重试。' if state == 'pending'
+                              else 'Yahoo 暂时限制行情请求，本次补齐未完成。')
+            else:
+                limits.append(task['error'])
         warmup=[]
         if items:
             prior_end=(date.fromisoformat(items[0]['date'])-timedelta(days=1)).isoformat()
-            prior=self.repo.get_history(self.profile,'stock:'+code,adjust,'1900-01-01',prior_end)
+            prior=self.repo.get_history(profile,'stock:'+code,adjust,'1900-01-01',prior_end)
             if prior and all(prior.get(k)==cached.get(k) for k in ('source','adjustment_basis','fetched_at')):
                 warmup=prior['items'][-249:]
             if len(warmup)<249:limits.append('较早的同版本指标预热历史不足249日，长均线可能不足窗口；更新数值研究可补齐更长历史')
@@ -284,6 +309,8 @@ class MarketWorkspaceService:
             pair=self.provider.history(identity,start,end)
             if not pair.get('raw') or [b['date'] for b in pair['raw']]!=[b['date'] for b in pair.get('adjusted',[])]:
                 raise ValueError('原始与复权必须同次完整配对，保留原配对缓存')
+            if current and pair['raw'][0]['date']>current['actual_start']:
+                raise ValueError('本次来源返回的历史较短，已保留原有较早日线')
             with self._publication(task):
                 previous=self.repo.get_history(self.profile,'stock:'+code,'raw',start,end)
                 if previous and previous['adjustment_basis']==pair['basis'] and previous['requested_start']<=start and previous['requested_end']>=end:return

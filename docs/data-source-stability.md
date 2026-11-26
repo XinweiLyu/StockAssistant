@@ -39,6 +39,8 @@ AkShare 的业绩预告、快报是按 `date=YYYYMMDD` 查询的全市场表，�
 
 ## 统一数据能力只读契约
 
+美股个股的 YFinance 路由在库请求失败时可尝试同一供应商的 Yahoo Chart 接口。报价沿用供应商的常规交易时段时间，日报继续使用供应商复权价格，交易助手保留原始与复权两套口径。Yahoo Chart 报价也失败时，仍可尝试原有 Stooq 路径。
+
 Web/API 提供 `GET /api/v1/data/overview` 和等价别名 `GET /api/v1/data/capabilities`，用于把数据源能力、数据集质量和场景优先级以同一个只读结构暴露给首页看板、数据中心、个股详情、自选和选股页面。
 
 首版契约只读取配置和 `DataFetcherManager` 的 fetcher 快照，不触发外部行情请求，也不返回任何原始密钥。响应分三层：

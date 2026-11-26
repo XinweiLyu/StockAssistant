@@ -74,9 +74,18 @@ class WorkspaceProvider:
 
     def history(self,identity,start,end):
         import yfinance as yf
-        frame=yf.Ticker(identity.source_symbol).history(start=start,end=(date.fromisoformat(end)+timedelta(days=1)).isoformat(),
-            interval='1d',auto_adjust=False,actions=True,timeout=15,raise_errors=True)
-        return yahoo_price_pair(frame,datetime.now(timezone.utc).isoformat())
+        try:
+            frame=yf.Ticker(identity.source_symbol).history(start=start,end=(date.fromisoformat(end)+timedelta(days=1)).isoformat(),
+                interval='1d',auto_adjust=False,actions=True,timeout=15,raise_errors=True)
+            return yahoo_price_pair(frame,datetime.now(timezone.utc).isoformat())
+        except Exception:
+            if identity.market != 'us':
+                raise
+            from data_provider.yahoo_chart import fetch_yahoo_chart, yahoo_chart_daily_frame
+            first, last = date.fromisoformat(start), date.fromisoformat(end)
+            chart = fetch_yahoo_chart(identity.source_symbol, first, last)
+            frame = yahoo_chart_daily_frame(chart, first, last)
+            return yahoo_price_pair(frame, datetime.now(timezone.utc).isoformat()) | {'source': 'yahoo_chart'}
 
     def quote(self,identity):
         import yfinance as yf
@@ -89,8 +98,11 @@ class WorkspaceProvider:
         value=quote.to_dict() if hasattr(quote,'to_dict') else vars(quote)
         when=value.get('provider_timestamp') or value.get('source_time')
         if hasattr(when,'isoformat'):when=when.isoformat()
+        trade_date = value.get('trade_date')
+        if isinstance(when, str) and when and not trade_date:
+            trade_date = datetime.fromisoformat(when).astimezone(ZoneInfo(identity.timezone)).date().isoformat()
         return dict(price=quote.price,change=(finite(getattr(quote,'change_pct',None))/100 if finite(getattr(quote,'change_pct',None)) is not None else None),
-            source=getattr(quote,'source','yfinance'),source_time=when if isinstance(when,str) else None,
-            trade_date=value.get('trade_date'),currency=getattr(quote,'currency',None),
+            source=value.get('source','yfinance'),source_time=when if isinstance(when,str) else None,
+            trade_date=trade_date,currency=getattr(quote,'currency',None),
             open=getattr(quote,'open_price',None),high=getattr(quote,'high',None),low=getattr(quote,'low',None),volume=getattr(quote,'volume',None),
             delay_state='unknown')

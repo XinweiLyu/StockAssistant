@@ -8,8 +8,11 @@ def iso_day(value: str) -> str:
     return date.fromisoformat(value).isoformat()
 
 
-def history_dates(start: str, end: str) -> tuple[str, str]:
+def history_dates(start: str, end: str, *, stock_history: bool = False) -> tuple[str, str]:
     a, b = date.fromisoformat(start), date.fromisoformat(end)
+    # Stock charts explicitly request all available sessions with this start.
+    if stock_history and a == date(1900, 1, 1) and a <= b:
+        return a.isoformat(), b.isoformat()
     try:
         floor = b.replace(year=b.year-5)
     except ValueError:

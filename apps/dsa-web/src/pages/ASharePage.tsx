@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { readNewsStockLink } from '../components/news/newsUtils';
+import { readAssistantStockLink } from '../utils/assistantStockNavigation';
 import { RefreshCw, Download, ArrowUpRight, ChevronRight, X } from 'lucide-react';
 import InvestmentWorkspace from '../components/a-share/InvestmentWorkspace';
 import apiClient from '../api';
@@ -32,7 +32,7 @@ function ASharePage() {
   const [selectedStrategy, setSelectedStrategy] = useState<string>();
   const [stockNavigationRevision, setStockNavigationRevision] = useState(0);
   useEffect(() => {
-    const navigation = readNewsStockLink(searchParams);
+    const navigation = readAssistantStockLink(searchParams);
     if (navigation) {
       setSelectedCode(navigation.code); setWorkspaceMarket(navigation.market);
       setSelectedStrategy(undefined); setStockNavigationRevision(value => value + 1);

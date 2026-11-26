@@ -123,17 +123,25 @@ export function useAutocomplete(
 
     // Set new timer
     debounceTimerRef.current = setTimeout(() => {
+      debounceTimerRef.current = null;
       search(value);
     }, debounceMs);
   }, [search, debounceMs, runtimeFallback]);
 
-  // Select suggestion item
-  const handleSelect = useCallback((suggestion: StockSuggestion) => {
-    setQuery(suggestion.displayCode);
+  const close = useCallback(() => {
+    if (debounceTimerRef.current !== null) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
     setIsOpen(false);
-    setSuggestions([]);
     setHighlightedIndex(-1);
   }, []);
+
+  const handleSelect = useCallback((suggestion: StockSuggestion) => {
+    close();
+    setQuery(suggestion.displayCode);
+    setSuggestions([]);
+  }, [close]);
 
   // Highlight previous item
   const highlightPrevious = useCallback(() => {
@@ -151,19 +159,11 @@ export function useAutocomplete(
     });
   }, [suggestions.length]);
 
-  // Close dropdown
-  const close = useCallback(() => {
-    setIsOpen(false);
-    setHighlightedIndex(-1);
-  }, []);
-
-  // Reset
   const reset = useCallback(() => {
+    close();
     setQuery('');
     setSuggestions([]);
-    setIsOpen(false);
-    setHighlightedIndex(-1);
-  }, []);
+  }, [close]);
 
   // Cleanup timer (on component unmount)
   useEffect(() => {

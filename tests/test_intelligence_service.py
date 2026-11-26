@@ -238,13 +238,33 @@ class IntelligenceServiceTestCase(unittest.TestCase):
         with self.assertRaises(IntelligenceServiceError):
             self.service.create_source(payload)
 
+    def test_direct_feed_requests_do_not_inherit_or_reuse_environment_proxy_settings(self) -> None:
+        url = "https://feeds.example.com/rss.xml"
+        initial_options = []
+
+        def merge_as_requests(request_url, **kwargs):
+            initial_options.append(kwargs["proxies"].copy())
+            with requests.Session() as session:
+                return session.merge_environment_settings(request_url, kwargs["proxies"], None, None, None)["proxies"]
+
+        with patch("requests.sessions.get_environ_proxies", return_value={
+            "all": "http://proxy.example.invalid:8080",
+            "no": "localhost",
+        }), patch("src.services.intelligence_service.requests.get", side_effect=merge_as_requests):
+            first = self.service._get_with_validated_dns(url)
+            second = self.service._get_with_validated_dns(url)
+
+        self.assertNotIn("all", first)
+        self.assertNotIn("all", second)
+        self.assertEqual(initial_options[0], initial_options[1])
+
     def test_fetch_enabled_sources_is_fail_open(self) -> None:
         self.service.create_source({"name": "good-feed", "url": "https://feeds.example.com/rss.xml", "scope_type": "market"})
         bad = self.service.create_source({"name": "bad-feed", "url": "https://bad.example.com/rss.xml", "scope_type": "market"})
 
         def fake_get(url, **kwargs):
             self.assertNotIn("trust_env", kwargs)
-            self.assertEqual(kwargs.get("proxies"), {"http": None, "https": None})
+            self.assertEqual(kwargs.get("proxies"), {"http": None, "https": None, "all": None})
             if "bad" in url:
                 raise RuntimeError("network token=secret should not leak")
             return self._mock_response()

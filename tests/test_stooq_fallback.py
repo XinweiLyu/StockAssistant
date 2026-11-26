@@ -57,8 +57,9 @@ class TestStooqFallback(unittest.TestCase):
         self.assertAlmostEqual(quote.amplitude, 3.02, places=2)
 
     @unittest.skipUnless(HAS_YFINANCE, "yfinance is required for this test")
+    @patch('data_provider.yfinance_fetcher.fetch_yahoo_chart_quote', side_effect=ValueError("Chart unavailable"))
     @patch('yfinance.Ticker')
-    def test_fetcher_integration_with_fallback(self, mock_ticker_class):
+    def test_fetcher_integration_with_fallback(self, mock_ticker_class, mock_chart):
         """测试 yfinance 失败后自动触发 Stooq 逻辑"""
         # 1. 模拟 yfinance 完全失效
         mock_ticker = MagicMock()
@@ -76,6 +77,7 @@ class TestStooqFallback(unittest.TestCase):
 
             self.assertIsNotNone(quote)
             self.assertEqual(quote.price, 900.0)
+            mock_chart.assert_called_once_with("NVDA")
             mock_stooq.assert_called_once_with("NVDA")
 
 

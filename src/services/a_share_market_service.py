@@ -123,7 +123,7 @@ class MarketService:
                            industries=[g for g in groups if g['kind']=='industry'],concepts=[g for g in groups if g['kind']=='concept'],demo=self.profile=='demo')
 
     def _history_page(self,entity,code,start,end,adjust,kind,refresh=False,priority=10,extra=None):
-        start,end=history_dates(start,end)
+        start,end=history_dates(start,end,stock_history=kind=='stock_history')
         cutoff=self.completed_day()
         limits=[]
         if end>cutoff:
@@ -440,10 +440,13 @@ class MarketService:
                 payload=payload|dict(pointer_key=pointer_key)
                 prior=self.repo.get_history(profile,payload['entity'],payload['adjust'],'1900-01-01',payload['end'])
                 if prior and prior['requested_start']<payload['start']:
-                    floor=date.fromisoformat(payload['end'])
-                    try: floor=floor.replace(year=floor.year-5)
-                    except ValueError: floor=floor.replace(year=floor.year-5,day=28)
-                    payload=payload|dict(start=max(prior['requested_start'],floor.isoformat()))
+                    first=prior['requested_start']
+                    if kind=='sector_history':
+                        floor=date.fromisoformat(payload['end'])
+                        try: floor=floor.replace(year=floor.year-5)
+                        except ValueError: floor=floor.replace(year=floor.year-5,day=28)
+                        first=max(first,floor.isoformat())
+                    payload=payload|dict(start=first)
                 if kind=='sector_history': result=provider.sector_history(payload['sector'],payload['start'],payload['end'])
                 else:
                     sources=(['tushare'] if profile.startswith('tushare') else [])+['akshare/eastmoney']
@@ -463,9 +466,12 @@ class MarketService:
                         return
                 with self._publication(task):
                     latest=self.repo.get_history(profile,payload['entity'],payload['adjust'],'1900-01-01','9999-12-31')
-                    if kind=='stock_history' and latest and latest['actual_end']>result.items[-1].date:
-                        self._health(profile,kind,'superseded_by_newer_history')
-                        return
+                    if kind=='stock_history' and latest:
+                        if latest['actual_end']>result.items[-1].date:
+                            self._health(profile,kind,'superseded_by_newer_history')
+                            return
+                        if latest['actual_start']<result.items[0].date and payload['start']<=latest['actual_start']:
+                            raise ValueError('本次来源返回的历史较短，已保留原有较早日线')
                     self.repo.replace_history(profile,payload['entity'],payload['adjust'],result.source,result.adjustment_basis,result.items,result.fetched_at,requested_start=payload['start'],requested_end=payload['end'])
             elif kind=='warmup':
                 with self._publication(task):

@@ -16,8 +16,9 @@ YfinanceFetcher - 兜底数据源 (Priority 4)
 
 import csv
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from io import StringIO
+from math import isfinite
 from typing import Optional, List, Dict, Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -34,6 +35,7 @@ from tenacity import (
 from .base import BaseFetcher, DataFetchError, STANDARD_COLUMNS, _is_hk_market, is_bse_code
 from .realtime_types import UnifiedRealtimeQuote, RealtimeSource
 from .us_index_mapping import get_us_index_yf_symbol, is_us_stock_code
+from .yahoo_chart import fetch_yahoo_chart, fetch_yahoo_chart_quote, yahoo_chart_daily_frame
 from .yfinance_fundamental_adapter import _safe_float
 from src.services.market_symbol_utils import get_suffix_market, is_suffix_market_symbol
 
@@ -229,6 +231,21 @@ class YfinanceFetcher(BaseFetcher):
             return df
 
         except Exception as e:
+            if self._is_us_stock(yf_code):
+                try:
+                    start = date.fromisoformat(start_date)
+                    end = date.fromisoformat(end_date)
+                    raw = yahoo_chart_daily_frame(fetch_yahoo_chart(yf_code, start, end), start, end)
+                    factors = raw["Adj Close"] / raw["Close"]
+                    valid = raw.loc[factors.gt(0)].copy()
+                    if valid.empty:
+                        raise ValueError("Yahoo Chart returned no adjusted daily bars")
+                    columns = ["Open", "High", "Low", "Close"]
+                    valid[columns] = valid[columns].mul(factors, axis=0)
+                    logger.info("[Yahoo Chart] %s 恢复日线数据：%s 根", yf_code, len(valid))
+                    return valid
+                except (OSError, ValueError, KeyError, IndexError, TypeError) as fallback_error:
+                    logger.warning("[Yahoo Chart] %s 日线兜底失败: %s", yf_code, fallback_error)
             if isinstance(e, DataFetchError):
                 raise
             raise DataFetchError(f"Yahoo Finance 获取数据失败: {e}") from e
@@ -534,6 +551,15 @@ class YfinanceFetcher(BaseFetcher):
         """
         return is_us_stock_code(stock_code)
 
+    def _get_us_stock_quote_fallback(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
+        try:
+            quote = fetch_yahoo_chart_quote(stock_code)
+            logger.info("[Yahoo Chart] %s 获取报价成功，来源时间 %s", stock_code, quote.provider_timestamp)
+            return quote
+        except (OSError, ValueError, KeyError, IndexError, TypeError, OverflowError) as exc:
+            logger.warning("[Yahoo Chart] %s 获取报价失败: %s，尝试 Stooq", stock_code, exc)
+            return self._get_us_stock_quote_from_stooq(stock_code)
+
     def _get_us_stock_quote_from_stooq(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """
         使用 Stooq 为美股实时行情提供免密钥兜底。
@@ -805,6 +831,7 @@ class YfinanceFetcher(BaseFetcher):
             UnifiedRealtimeQuote 对象，获取失败返回 None
         """
         import yfinance as yf
+        from yfinance.exceptions import YFRateLimitError
 
         # 美股指数：使用映射（SPX -> ^GSPC）
         yf_symbol, index_name = get_us_index_yf_symbol(stock_code)
@@ -847,16 +874,14 @@ class YfinanceFetcher(BaseFetcher):
                 volume = getattr(info, 'lastVolume', None) or getattr(info, 'last_volume', None)
                 market_cap = getattr(info, 'marketCap', None) or getattr(info, 'market_cap', None)
 
+            except YFRateLimitError:
+                raise
             except Exception:
                 # 回退到 history 方法获取最新数据
                 logger.debug("[Yfinance] fast_info 失败，尝试 history 方法")
                 hist = ticker.history(period='2d')
                 if hist.empty:
-                    if is_us_symbol:
-                        logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据，尝试 Stooq 兜底")
-                        return self._get_us_stock_quote_from_stooq(symbol)
-                    logger.warning(f"[Yfinance] 无法获取 {symbol} 的数据")
-                    return None
+                    raise DataFetchError(f"yfinance 未返回 {symbol} 日线")
 
                 today = hist.iloc[-1]
                 prev = hist.iloc[-2] if len(hist) > 1 else today
@@ -868,6 +893,11 @@ class YfinanceFetcher(BaseFetcher):
                 low = float(today['Low'])
                 volume = int(today['Volume'])
                 market_cap = None
+
+            if is_us_symbol:
+                price = _safe_float(price)
+                if price is None or not isfinite(price) or price <= 0:
+                    raise DataFetchError(f"yfinance 未返回 {symbol} 有效报价")
 
             # 计算涨跌幅
             change_amount = None
@@ -939,8 +969,8 @@ class YfinanceFetcher(BaseFetcher):
 
         except Exception as e:
             if self._is_us_stock(stock_code):
-                logger.warning(f"[Yfinance] 获取美股 {stock_code} 实时行情失败: {e}，尝试 Stooq 兜底")
-                return self._get_us_stock_quote_from_stooq(stock_code)
+                logger.warning(f"[Yfinance] 获取美股 {stock_code} 实时行情失败: {e}，尝试 Yahoo Chart")
+                return self._get_us_stock_quote_fallback(stock_code)
             logger.warning(f"[Yfinance] 获取 {stock_code} 实时行情失败: {e}")
             return None
 

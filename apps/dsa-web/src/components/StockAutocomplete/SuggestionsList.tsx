@@ -53,6 +53,10 @@ export function SuggestionsList({
             'hover:bg-[var(--autocomplete-hover-bg)]/25',
             index === highlightedIndex && 'bg-[var(--autocomplete-hover-bg)]/25',
           )}
+          onMouseDown={(event) => {
+            // Keep focus in the combobox until the option's click is delivered.
+            if (event.button === 0) event.preventDefault();
+          }}
           onClick={() => onSelect(suggestion)}
           onMouseEnter={() => onMouseEnter(index)}
         >

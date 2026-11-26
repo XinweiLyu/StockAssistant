@@ -27,6 +27,34 @@ describe('news workspace', () => {
     expect(screen.getByText(/没有启用的来源/)).toBeInTheDocument();
   });
 
+  it('only offers hot-feed sources in market hotspots and restores RSS in news', async () => {
+    const sources = [
+      { id: 1, name: '市场热点源', market: 'cn', source_type: 'newsnow', enabled: true },
+      { id: 2, name: '全球 RSS', market: 'global', source_type: 'rss', enabled: true },
+      { id: 3, name: '港股热点源', market: 'hk', source_type: 'newsnow', enabled: true },
+    ];
+    vi.mocked(apiClient.get).mockImplementation(async (url) => {
+      if (String(url).endsWith('/sources')) return { data: { items: sources, total: sources.length } };
+      if (String(url).endsWith('/refresh')) return { data: idle };
+      return { data: { items: [item], total: 1 } };
+    });
+    mount();
+
+    expect(await screen.findByRole('option', { name: '市场热点源' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: '全球 RSS' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: '港股热点源' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('tab', { name: '新闻快讯' }));
+    const rss = await screen.findByRole('option', { name: '全球 RSS' });
+    fireEvent.change(screen.getByLabelText('来源'), { target: { value: (rss as HTMLOptionElement).value } });
+    await waitFor(() => expect(apiClient.get).toHaveBeenCalledWith(
+      '/api/v1/intelligence/items',
+      expect.objectContaining({ params: expect.objectContaining({ source_id: '2' }) }),
+    ));
+    fireEvent.click(screen.getByRole('tab', { name: '市场热点' }));
+    expect(screen.getByLabelText('来源')).toHaveValue('');
+    expect(screen.queryByRole('option', { name: '全球 RSS' })).not.toBeInTheDocument();
+  });
+
   it('empty watchlist does not request an unrestricted news list', async () => {
     mount();
     await screen.findByText('企业业绩公告');
